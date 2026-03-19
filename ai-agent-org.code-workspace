@@ -1,0 +1,125 @@
+{
+  "folders": [
+    { "name": "ai-agent-org", "path": "." }
+  ],
+  "settings": {
+    "python.defaultInterpreterPath": "${workspaceFolder}/.venv/bin/python",
+    "python.formatting.provider": "black",
+    "editor.formatOnSave": true,
+    "editor.rulers": [88],
+    "files.exclude": {
+      "**/__pycache__": true,
+      "**/*.pyc": true,
+      ".venv": true
+    },
+    "[python]": {
+      "editor.defaultFormatter": "ms-python.black-formatter"
+    },
+    "[typescript]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },
+    "[typescriptreact]": {
+      "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },
+    "python.linting.enabled": true,
+    "python.linting.ruffEnabled": true,
+    "terminal.integrated.env.osx": {
+      "PYTHONPATH": "${workspaceFolder}"
+    },
+    "terminal.integrated.env.linux": {
+      "PYTHONPATH": "${workspaceFolder}"
+    }
+  },
+  "extensions": {
+    "recommendations": [
+      "ms-python.python",
+      "ms-python.black-formatter",
+      "charliermarsh.ruff",
+      "ms-python.vscode-pylance",
+      "esbenp.prettier-vscode",
+      "bradlc.vscode-tailwindcss",
+      "dbaeumer.vscode-eslint",
+      "GitHub.copilot",
+      "streetsidesoftware.code-spell-checker",
+      "usernamehw.errorlens",
+      "eamodio.gitlens",
+      "ms-python.debugpy"
+    ]
+  },
+  "launch": {
+    "version": "0.2.0",
+    "configurations": [
+      {
+        "name": "Run API server",
+        "type": "debugpy",
+        "request": "launch",
+        "module": "uvicorn",
+        "args": ["api.main:app", "--reload", "--port", "8000"],
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env"
+      },
+      {
+        "name": "Run single agent (security)",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/agents/security_agent.py",
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env"
+      },
+      {
+        "name": "Run full pipeline",
+        "type": "debugpy",
+        "request": "launch",
+        "program": "${workspaceFolder}/pipeline/orchestrator.py",
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env"
+      },
+      {
+        "name": "Run tests",
+        "type": "debugpy",
+        "request": "launch",
+        "module": "pytest",
+        "args": ["tests/", "-v"],
+        "cwd": "${workspaceFolder}",
+        "envFile": "${workspaceFolder}/.env"
+      }
+    ]
+  },
+  "tasks": {
+    "version": "2.0.0",
+    "tasks": [
+      {
+        "label": "Install dependencies",
+        "type": "shell",
+        "command": "pip install -r requirements.txt",
+        "group": "build"
+      },
+      {
+        "label": "Run tests",
+        "type": "shell",
+        "command": "pytest tests/ -v --tb=short",
+        "group": { "kind": "test", "isDefault": true }
+      },
+      {
+        "label": "Start API",
+        "type": "shell",
+        "command": "uvicorn api.main:app --reload --port 8000",
+        "group": "build",
+        "isBackground": true
+      },
+      {
+        "label": "Start dashboard",
+        "type": "shell",
+        "command": "cd dashboard && npm run dev",
+        "group": "build",
+        "isBackground": true
+      },
+      {
+        "label": "Lint",
+        "type": "shell",
+        "command": "ruff check . && black --check .",
+        "group": "build"
+      }
+    ]
+  }
+}
