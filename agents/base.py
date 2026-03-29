@@ -83,7 +83,7 @@ client = _LazyClient()
 @dataclass
 class AgentResult:
     agent_name: str
-    output: str
+    output: str = ""
     tool_calls: list[dict] = field(default_factory=list)
     input_tokens: int = 0
     output_tokens: int = 0
@@ -93,6 +93,17 @@ class AgentResult:
     retries: int = 0
     state: str = "done"
     artifact: AgentArtifact | None = None
+
+    def __post_init__(self):
+        """Validate that result has meaningful output or errors."""
+        if not self.output and not self.errors and self.state == "done":
+            import warnings
+            warnings.warn(
+                f"AgentResult for '{self.agent_name}' has no output and no errors. "
+                "This may indicate the agent did not produce any results.",
+                UserWarning,
+                stacklevel=2,
+            )
 
     @property
     def cost_usd(self) -> float:

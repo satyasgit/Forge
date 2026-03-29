@@ -14,6 +14,9 @@ class CodeSmell:
     pattern_name: str; severity: str; category: str; location: str; evidence: str; fix: str
     def to_summary(self): return f"[{self.severity.upper()}] {self.pattern_name} at {self.location} ({self.category})"
 
+from agents.agent_config import register_agent
+
+@register_agent
 class CodeReviewAgent(BaseAgent):
     name = "code_review"
     role = "Principal Engineer / Code Reviewer"

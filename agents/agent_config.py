@@ -151,7 +151,11 @@ _AGENT_REGISTRY: dict[str, type] = {}
 
 def register_agent(cls: type) -> type:
     """Decorator to register an agent class. Used by specialist agents."""
-    name = getattr(cls, "name", cls.__name__.lower())
+    name = getattr(cls, "name", None)
+    if not name:
+        raise ValueError(f"Agent class {cls.__name__} must have a 'name' attribute")
+    if not hasattr(cls, "run"):
+        raise ValueError(f"Agent class {cls.__name__} must have a 'run' method")
     _AGENT_REGISTRY[name] = cls
     return cls
 
@@ -184,5 +188,3 @@ def list_agent_metadata() -> list[dict]:
             "config": get_agent_config(name).__dict__,
         })
     return agents
-""",
-<parameter name="Description">Core DI config module: per-agent model selection, accurate cost calculation, agent state machine, typed artifacts, and a single agent registry that replaces the 3 hardcoded registries.

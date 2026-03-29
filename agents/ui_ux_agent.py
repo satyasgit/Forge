@@ -14,6 +14,9 @@ class DesignSignal:
     signal_type: str; description: str; implication: str
     def to_summary(self): return f"[{self.signal_type.upper()}] {self.description} → {self.implication}"
 
+from agents.agent_config import register_agent
+
+@register_agent
 class UIUXAgent(BaseAgent):
     name = "ui_ux"
     role = "Senior Product Designer"

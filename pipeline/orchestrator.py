@@ -154,65 +154,56 @@ class Orchestrator:
 
 def make_full_app_pipeline(feature: str, project_id: str) -> list[PipelineTask]:
     """Standard pipeline for building any mobile/web feature end-to-end."""
-    from agents.ui_ux_agent import UIUXAgent
-    from agents.frontend_agent import FrontendAgent
-    from agents.backend_agent import BackendAgent
-    from agents.mobile_agent import MobileAgent
-    from agents.security_agent import SecurityAgent
-    from agents.code_review_agent import CodeReviewAgent
-    from agents.devops_agent import DevOpsAgent
-    from agents.qa_agent import QAAgent
-    from agents.pm_agent import PMAgent
-    from agents.monetisation_agent import MonetisationAgent
+    from agents.agent_config import create_agent
 
     return [
         PipelineTask(
-            agent=PMAgent(project_id),
+            agent=create_agent("pm", project_id),
             task=f"Create a detailed PRD with user stories and acceptance criteria for: {feature}",
             depends_on=[],
         ),
         PipelineTask(
-            agent=UIUXAgent(project_id),
+            agent=create_agent("ui_ux", project_id),
             task=f"Design the UI/UX for: {feature}",
             depends_on=["pm"],
         ),
         PipelineTask(
-            agent=FrontendAgent(project_id),
+            agent=create_agent("frontend", project_id),
             task=f"Build React web components for: {feature}",
             depends_on=["ui_ux"],
         ),
         PipelineTask(
-            agent=MobileAgent(project_id),
+            agent=create_agent("mobile", project_id),
             task=f"Build React Native mobile screens for: {feature}",
             depends_on=["ui_ux"],
         ),
         PipelineTask(
-            agent=BackendAgent(project_id),
+            agent=create_agent("backend", project_id),
             task=f"Build FastAPI backend with database models for: {feature}",
             depends_on=["pm"],
         ),
         PipelineTask(
-            agent=SecurityAgent(project_id),
+            agent=create_agent("security", project_id),
             task=f"Security audit of the backend API for: {feature}",
             depends_on=["backend"],
         ),
         PipelineTask(
-            agent=CodeReviewAgent(project_id),
+            agent=create_agent("code_review", project_id),
             task="Code review of frontend and backend code",
             depends_on=["frontend", "backend"],
         ),
         PipelineTask(
-            agent=QAAgent(project_id),
+            agent=create_agent("qa", project_id),
             task=f"Write comprehensive test suite for: {feature}",
             depends_on=["frontend", "backend", "code_review"],
         ),
         PipelineTask(
-            agent=DevOpsAgent(project_id),
+            agent=create_agent("devops", project_id),
             task=f"Create Docker + CI/CD pipeline for: {feature}",
             depends_on=["backend", "security"],
         ),
         PipelineTask(
-            agent=MonetisationAgent(project_id),
+            agent=create_agent("monetisation", project_id),
             task=f"Design monetisation strategy and Stripe integration for: {feature}",
             depends_on=["backend", "pm"],
         ),

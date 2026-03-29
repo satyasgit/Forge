@@ -77,34 +77,36 @@ class JobStatus(BaseModel):
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _get_agent(name: str, project_id: str):
-    from agents.security_agent import SecurityAgent
+from agents.agent_config import create_agent, list_agent_metadata, register_agent
+
+# Explicit agent registration (no import side effects)
+def _register_all_agents():
+    from agents.pm_agent import PMAgent
     from agents.frontend_agent import FrontendAgent
     from agents.backend_agent import BackendAgent
     from agents.mobile_agent import MobileAgent
-    from agents.devops_agent import DevOpsAgent
-    from agents.code_review_agent import CodeReviewAgent
+    from agents.security_agent import SecurityAgent
     from agents.qa_agent import QAAgent
-    from agents.pm_agent import PMAgent
+    from agents.code_review_agent import CodeReviewAgent
+    from agents.devops_agent import DevOpsAgent
     from agents.ui_ux_agent import UIUXAgent
     from agents.monetisation_agent import MonetisationAgent
 
-    registry = {
-        "security":      SecurityAgent,
-        "frontend":      FrontendAgent,
-        "backend":       BackendAgent,
-        "mobile":        MobileAgent,
-        "devops":        DevOpsAgent,
-        "code_review":   CodeReviewAgent,
-        "qa":            QAAgent,
-        "pm":            PMAgent,
-        "ui_ux":         UIUXAgent,
-        "monetisation":  MonetisationAgent,
-    }
-    cls = registry.get(name)
-    if not cls:
-        raise HTTPException(400, f"Unknown agent: {name}. Valid: {list(registry)}")
-    return cls(project_id=project_id)
+    for cls in [
+        PMAgent, FrontendAgent, BackendAgent, MobileAgent,
+        SecurityAgent, QAAgent, CodeReviewAgent, DevOpsAgent,
+        UIUXAgent, MonetisationAgent
+    ]:
+        register_agent(cls)
+
+_register_all_agents()
+
+def _get_agent(name: str, project_id: str):
+    try:
+        return create_agent(name, project_id=project_id)
+    except ValueError as e:
+        logging.error(f"Failed to create agent '{name}': {e}")
+        raise HTTPException(400, str(e))
 
 
 # ── Routes ────────────────────────────────────────────────────────────────────
@@ -152,8 +154,7 @@ def get_job(job_id: str):
 @app.post("/api/agents/security/audit")
 async def security_audit(req: SecurityAuditRequest):
     """Run a direct security audit (synchronous — for small codebases)."""
-    from agents.security_agent import SecurityAgent
-    agent = SecurityAgent(project_id=req.project_id)
+    agent = _get_agent("security", req.project_id)
     result = agent.run_full_audit(req.code, req.language, req.context)
     return result.to_dict()
 
@@ -175,17 +176,4 @@ def project_cost(project_id: str):
 
 @app.get("/api/agents")
 def list_agents():
-    return {
-        "agents": [
-            {"name": "pm",           "role": "Product Manager",           "description": "PRDs, user stories, Jira tickets"},
-            {"name": "ui_ux",        "role": "UI/UX Designer",            "description": "Wireframes, component specs, design tokens"},
-            {"name": "frontend",     "role": "Frontend Engineer",         "description": "React/TypeScript components"},
-            {"name": "mobile",       "role": "Mobile Engineer",           "description": "React Native / Expo screens"},
-            {"name": "backend",      "role": "Backend Engineer",          "description": "FastAPI, SQLAlchemy, PostgreSQL"},
-            {"name": "security",     "role": "Security Engineer",         "description": "OWASP, SAST, threat models"},
-            {"name": "code_review",  "role": "Principal Engineer",        "description": "Code quality, patterns, bugs"},
-            {"name": "qa",           "role": "QA Engineer",               "description": "Unit, integration, E2E, load tests"},
-            {"name": "devops",       "role": "DevOps Engineer",           "description": "Docker, CI/CD, Terraform"},
-            {"name": "monetisation", "role": "Growth Engineer",           "description": "Stripe, IAP, pricing, growth"},
-        ]
-    }
+    return {"agents": list_agent_metadata()}

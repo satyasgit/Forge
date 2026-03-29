@@ -71,6 +71,9 @@ class TestAntiPattern:
         return f"[{self.severity.upper()}] {self.pattern_name} at {self.location}"
 
 
+from agents.agent_config import register_agent
+
+@register_agent
 class QAAgent(BaseAgent):
     name = "qa"
     role = "Senior QA Engineer / SDET"

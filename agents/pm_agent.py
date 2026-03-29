@@ -62,6 +62,9 @@ class ComplexitySignal:
     description: str
 
 
+from agents.agent_config import register_agent
+
+@register_agent
 class PMAgent(BaseAgent):
     name = "pm"
     role = "Senior Product Manager"

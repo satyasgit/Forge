@@ -74,6 +74,9 @@ class A11yIssue:
         return f"[{self.severity.upper()}] WCAG {self.wcag} — {self.pattern_name} at {self.location}"
 
 
+from agents.agent_config import register_agent
+
+@register_agent
 class FrontendAgent(BaseAgent):
     name = "frontend"
     role = "Senior Frontend Engineer"

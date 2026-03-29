@@ -20,6 +20,9 @@ class APIAntiPattern:
     pattern_name: str; severity: str; category: str; location: str; evidence: str; fix: str; impact: str
     def to_summary(self): return f"[{self.severity.upper()}] {self.pattern_name} at {self.location}"
 
+from agents.agent_config import register_agent
+
+@register_agent
 class BackendAgent(BaseAgent):
     name = "backend"
     role = "Senior Backend Engineer"

@@ -14,6 +14,9 @@ class BillingSignal:
     signal_type: str; description: str; what_to_build: str
     def to_summary(self): return f"[{self.signal_type.upper()}] {self.description} → {self.what_to_build}"
 
+from agents.agent_config import register_agent
+
+@register_agent
 class MonetisationAgent(BaseAgent):
     name = "monetisation"
     role = "Growth Engineer / Monetisation Specialist"

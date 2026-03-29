@@ -73,6 +73,9 @@ class SecurityFinding:
         """).strip()
 
 
+from agents.agent_config import register_agent
+
+@register_agent
 class SecurityAgent(BaseAgent):
     name = "security"
     role = "Application Security Engineer"
