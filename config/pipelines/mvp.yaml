@@ -1,0 +1,54 @@
+# MVP Template
+# Minimum Viable Product - core features only, skip polish
+version: "1.0"
+
+name: "mvp"
+description: "Minimum Viable Product - core features only, skip polish"
+project_types: ["web", "mobile", "saas", "startup", "prototype"]
+
+auto_resolve: true
+strict_validation: false
+
+estimated_cost_usd: 1.20
+estimated_duration_minutes: 6
+
+agents:
+  - agent: pm
+    enabled: true
+    model: "claude-opus-4-5"
+    task: "Create lean PRD focusing on core MVP features only for: {feature}"
+
+  - agent: ui_ux
+    enabled: false  # Skip UI/UX to save time/cost; frontend uses basic UI
+    model: "claude-sonnet-4-5"
+
+  - agent: frontend
+    enabled: true
+    model: "claude-sonnet-4-5"
+    task: "Build basic but functional React/TypeScript components for core user flows. Use simple styling, skip advanced UX"
+
+  - agent: backend
+    enabled: true
+    model: "claude-sonnet-4-5"
+    task: "Build minimal FastAPI backend with essential endpoints and basic authentication. Focus on functionality over perfection"
+
+  - agent: code_review
+    enabled: false  # Skip to save time, accept risk
+    model: "claude-sonnet-4-5"
+
+  - agent: qa
+    enabled: true
+    model: "claude-sonnet-4-5"
+    task: "Write critical path tests only - happy path and main error scenarios. Skip edge cases for MVP"
+
+  - agent: devops
+    enabled: false  # Manual deployment for MVP
+    model: "claude-sonnet-4-5"
+
+  - agent: monetisation
+    enabled: false  # Add later for production
+    model: "claude-sonnet-4-5"
+
+settings:
+  max_cost_usd: 2.0
+  timeout_minutes: 30

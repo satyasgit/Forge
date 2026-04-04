@@ -2,6 +2,8 @@
 Pipeline Orchestrator.
 Resolves agent dependencies, runs independent agents in parallel,
 tracks costs, and notifies on completion.
+
+v2: Configurable pipelines via YAML templates.
 """
 from __future__ import annotations
 
@@ -16,6 +18,10 @@ import anthropic
 from agents.base import AgentResult
 from config.settings import settings
 from memory.store import ProjectMemory
+from pipeline.config_loader import (
+    PipelineConfig,
+    build_pipeline_from_config as build_tasks_from_config,
+)
 
 if TYPE_CHECKING:
     from agents.base import BaseAgent
@@ -83,11 +89,28 @@ class Orchestrator:
 
     Tasks with no pending dependencies execute in parallel.
     Each task's output is injected as context for downstream tasks.
+
+    v2: Can build pipeline from PipelineConfig (YAML templates).
     """
 
     def __init__(self, project_id: str):
         self.project_id = project_id
         self.memory = ProjectMemory(project_id)
+
+    def build_from_config(self, config: PipelineConfig) -> list[PipelineTask]:
+        """
+        Build pipeline tasks from a PipelineConfig.
+
+        This is the main entry point for configurable pipelines.
+        Uses config_loader to resolve dependencies and create tasks.
+
+        Args:
+            config: Validated pipeline configuration
+
+        Returns:
+            List of PipelineTask objects in topological order
+        """
+        return build_tasks_from_config(config)
 
     async def run(self, tasks: list[PipelineTask]) -> PipelineRun:
         run = PipelineRun(project_id=self.project_id, tasks=tasks)
@@ -210,9 +233,35 @@ def make_full_app_pipeline(feature: str, project_id: str) -> list[PipelineTask]:
     ]
 
 
-async def run_full_pipeline(feature: str, project_id: str) -> PipelineRun:
+async def run_full_pipeline(
+    feature: str,
+    project_id: str,
+    config: PipelineConfig | None = None
+) -> PipelineRun:
+    """
+    Run the full pipeline for a feature.
+
+    Args:
+        feature: Feature description (substituted into task prompts)
+        project_id: Project identifier for memory
+        config: Optional PipelineConfig. If None, uses default full pipeline.
+
+    Returns:
+        PipelineRun with results
+    """
     orch = Orchestrator(project_id)
-    tasks = make_full_app_pipeline(feature, project_id)
+
+    if config is not None:
+        # Build from config (YAML template or custom)
+        tasks = orch.build_from_config(config)
+        # Substitute {feature} in task prompts
+        for task in tasks:
+            if task.task:
+                task.task = task.task.format(feature=feature, project_id=project_id)
+    else:
+        # Backward compatible: default full pipeline
+        tasks = make_full_app_pipeline(feature, project_id)
+
     return await orch.run(tasks)
 
 

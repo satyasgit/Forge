@@ -1,0 +1,48 @@
+# API Only Template
+# Backend API with security and tests (no UI)
+version: "1.0"
+
+name: "api_only"
+description: "Backend API with security and tests (no UI)"
+project_types: ["api", "saas", "backend", "microservice"]
+
+auto_resolve: true
+strict_validation: false
+
+estimated_cost_usd: 2.10
+estimated_duration_minutes: 10
+
+agents:
+  - agent: pm
+    enabled: true
+    model: "claude-opus-4-5"
+    task: "Create API specification with OpenAPI/Swagger documentation for: {feature}"
+
+  - agent: backend
+    enabled: true
+    model: "claude-sonnet-4-5"
+    task: "Build production-ready FastAPI backend with pydantic models, SQLAlchemy ORM, Alembic migrations, and comprehensive error handling for: {feature}"
+
+  - agent: security
+    enabled: true
+    model: "claude-opus-4-5"
+    task: "Audit backend API security focusing on OWASP Top 10, injection vulnerabilities, authentication/authorization, and data validation"
+
+  - agent: code_review
+    enabled: true
+    model: "claude-sonnet-4-5"
+    task: "Review backend code for API design, error handling, performance, and security best practices"
+
+  - agent: qa
+    enabled: true
+    model: "claude-sonnet-4-5"
+    task: "Write comprehensive pytest suite using FastAPI TestClient, covering all endpoints, auth flows, and edge cases"
+
+  - agent: devops
+    enabled: true
+    model: "claude-sonnet-4-5"
+    task: "Dockerize with multi-stage build, configure GitHub Actions CI/CD with security scanning, add health checks"
+
+settings:
+  max_cost_usd: 5.0
+  timeout_minutes: 60

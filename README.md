@@ -100,6 +100,92 @@ print(result.summary())
 # ...
 ```
 
+## 🛠️ Configurable Pipelines (NEW!)
+
+### Run with a YAML Template
+
+Instead of the full 10-agent pipeline, choose a template that fits your needs:
+
+```python
+from pipeline.config_loader import load_template, run_full_pipeline
+
+# Load a template (e.g., api_only, mvp, security_audit_only)
+config = load_template("api_only")
+
+# Run with the template
+result = asyncio.run(run_full_pipeline(
+    feature="User authentication API with JWT",
+    project_id="my-api",
+    config=config,  # ← Optional: if None, uses full pipeline
+))
+```
+
+**Available templates** (see `config/pipelines/`):
+- `full_stack_web` - All 10 agents, complete web app
+- `api_only` - Backend + security + QA + DevOps (no UI)
+- `mvp` - Lean pipeline (PM, Frontend, Backend, QA) - fast & cheap
+- `security_audit_only` - Deep security review only
+
+### Run via API
+
+Start the server and use new endpoints:
+
+```bash
+uvicorn api.main:app --reload --port 8000
+```
+
+```bash
+# List templates
+curl http://localhost:8000/api/pipelines/templates
+
+# Get template details
+curl http://localhost:8000/api/pipelines/templates/api_only
+
+# Validate custom config
+curl -X POST http://localhost:8000/api/pipelines/validate \
+  -H "Content-Type: application/json" \
+  -d '{"config": {"name": "my_pipeline", "agents": [{"agent": "backend"}]}}'
+
+# Preview (estimate cost/duration)
+curl -X POST http://localhost:8000/api/pipelines/preview \
+  -H "Content-Type: application/json" \
+  -d @my_pipeline.json
+
+# Run custom pipeline
+curl -X POST "http://localhost:8000/api/pipelines/run?feature=User%20API&project_id=my-project" \
+  -H "Content-Type: application/json" \
+  -d @my_pipeline.json
+```
+
+Interactive API docs: http://localhost:8000/docs
+
+### Create Custom Templates
+
+Copy and edit `config/pipelines/mvp.yaml`:
+
+```yaml
+version: "1.0"
+name: "my_custom"
+description: "My custom pipeline"
+agents:
+  - agent: "pm"
+    enabled: true
+    task: "PRD for: {feature}"
+  - agent: "backend"
+    enabled: true
+    depends_on: ["pm"]
+auto_resolve: true
+```
+
+Validation:
+```bash
+python -c "from pipeline.config_loader import load_template, validate_pipeline; cfg = load_template('my_custom'); result = validate_pipeline(cfg); print('OK' if result.valid else result.errors)"
+```
+
+See `config/pipelines/README.md` for complete template reference.
+
+---
+
 ## Start the API server
 
 ```bash

@@ -1,0 +1,40 @@
+# Security Audit Only Template
+# Deep security review of existing codebase
+version: "1.0"
+
+name: "security_audit_only"
+description: "Deep security review of existing codebase"
+project_types: ["security", "audit", "compliance", "penetration-test"]
+
+auto_resolve: false
+strict_validation: true
+
+estimated_cost_usd: 1.80
+estimated_duration_minutes: 8
+
+agents:
+  - agent: security
+    enabled: true
+    model: "claude-opus-4-5"
+    task: |
+      Perform comprehensive security audit including:
+      - OWASP Top 10 (2021) analysis
+      - SAST pattern matching (SQLi, XSS, path traversal, SSRF)
+      - Secret/credential leak detection
+      - JWT and authentication flow review
+      - Infrastructure-as-code security (Docker, GitHub Actions, Terraform)
+      Provide detailed remediation recommendations with code examples for each finding
+
+  - agent: code_review
+    enabled: true
+    model: "claude-opus-4-5"
+    task: "Deep code review focusing on security anti-patterns, input validation, proper error handling, and secure coding practices"
+
+  - agent: qa
+    enabled: true
+    model: "claude-sonnet-4-5"
+    task: "Write security-focused tests: auth bypass attempts, injection attack vectors, privilege escalation scenarios, and edge case security tests"
+
+settings:
+  max_cost_usd: 3.0
+  timeout_minutes: 45

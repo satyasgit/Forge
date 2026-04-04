@@ -1,0 +1,50 @@
+# Agent Dependencies
+# Centralized dependency metadata for all agents
+# Used by pipeline config loader to resolve execution order
+
+dependencies:
+  # Frontend needs UI/UX designs before implementation
+  frontend:
+    - ui_ux
+
+  # Mobile needs UI/UX designs (mobile screens)
+  mobile:
+    - ui_ux
+
+  # Backend needs Product Manager PRD as input
+  backend:
+    - pm
+
+  # Security audits the backend code
+  security:
+    - backend
+
+  # Code review needs code to review (frontend and backend)
+  code_review:
+    - frontend
+    - backend
+
+  # QA needs backend API and reviewed code
+  qa:
+    - backend
+    - code_review
+
+  # DevOps needs secure backend + infra knowledge
+  devops:
+    - backend
+    - security
+
+  # Monetisation needs backend models and PM guidance
+  monetisation:
+    - backend
+    - pm
+
+  # UI/UX needs PM requirements
+  ui_ux:
+    - pm
+
+# Notes:
+# - These are default dependencies. Templates can override with per-agent `depends_on`
+# - Dependencies are used to topologically sort the pipeline DAG
+# - If an agent is disabled but another depends on it, validation warning is issued
+# - Use `auto_resolve: true` in template to auto-add missing deps (see templates)

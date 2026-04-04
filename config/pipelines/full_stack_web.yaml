@@ -1,0 +1,64 @@
+# Full Stack Web Template
+# Complete web application with all specialist agents
+version: "1.0"
+
+name: "full_stack_web"
+description: "Complete web application with all specialist agents"
+project_types: ["web", "saas"]
+
+auto_resolve: true
+strict_validation: false
+
+estimated_cost_usd: 3.50
+estimated_duration_minutes: 12
+
+agents:
+  - agent: pm
+    enabled: true
+    model: "claude-opus-4-5"
+    task: "Create a comprehensive PRD with user stories, acceptance criteria, and technical specification for: {feature}"
+    max_tokens: 8192
+
+  - agent: ui_ux
+    enabled: true
+    model: "claude-sonnet-4-5"
+    task: "Design the complete UI/UX including component specs, user flows, and design tokens for: {feature}"
+
+  - agent: frontend
+    enabled: true
+    model: "claude-sonnet-4-5"
+    task: "Build React/TypeScript components with Vitest tests for: {feature}"
+
+  - agent: backend
+    enabled: true
+    model: "claude-sonnet-4-5"
+    task: "Build FastAPI backend with SQLAlchemy models and Alembic migrations for: {feature}"
+
+  - agent: security
+    enabled: true
+    model: "claude-opus-4-5"
+    task: "Perform comprehensive security audit: OWASP Top 10, SAST, dependency scanning, JWT validation"
+
+  - agent: code_review
+    enabled: true
+    model: "claude-sonnet-4-5"
+    task: "Review all code for best practices, security anti-patterns, and performance issues"
+
+  - agent: qa
+    enabled: true
+    model: "claude-sonnet-4-5"
+    task: "Write comprehensive pytest + Playwright test suite covering all critical paths"
+
+  - agent: devops
+    enabled: true
+    model: "claude-sonnet-4-5"
+    task: "Create Docker configuration and GitHub Actions CI/CD pipeline with security scanning"
+
+  - agent: monetisation
+    enabled: true
+    model: "claude-sonnet-4-5"
+    task: "Design monetisation strategy with Stripe integration, billing models, and entitlement middleware"
+
+settings:
+  max_cost_usd: 10.0
+  timeout_minutes: 120
