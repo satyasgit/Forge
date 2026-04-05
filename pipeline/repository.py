@@ -159,7 +159,7 @@ class PipelineRepository:
             status="pending",
             checkpoint_type=checkpoint_type,
             message=message,
-            metadata=metadata,
+            checkpoint_metadata=metadata,
             created_at=datetime.utcnow(),
         )
         self.db.add(checkpoint)
@@ -357,7 +357,7 @@ class AsyncPipelineRepository:
             status="pending",
             checkpoint_type=checkpoint_type,
             message=message,
-            metadata=metadata,
+            checkpoint_metadata=metadata,
             created_at=datetime.utcnow(),
         )
         self.db.add(checkpoint)

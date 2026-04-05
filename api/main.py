@@ -6,7 +6,7 @@ import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
-from typing import Any
+from typing import Any, AsyncGenerator
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,6 +24,7 @@ from pipeline.config_loader import (
     estimate_duration,
 )
 from pipeline.repository import get_async_repository, AsyncPipelineRepository
+from config.database import get_async_db, AsyncSessionLocal
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
@@ -62,10 +63,12 @@ app.add_middleware(
 
 from fastapi import Depends
 
-async def get_repo() -> AsyncPipelineRepository:
-    """Dependency for async repository."""
-    async with get_async_repository() as repo:
-        yield repo
+async def get_repo() -> AsyncGenerator[AsyncPipelineRepository, None]:
+    """Dependency for async repository. Yields a repository with managed session."""
+    from sqlalchemy.ext.asyncio import AsyncSession
+    # We'll use the existing AsyncSessionLocal directly
+    async with AsyncSessionLocal() as session:
+        yield AsyncPipelineRepository(session)
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -516,7 +519,7 @@ async def get_run_checkpoints(run_id: str, project_id: str = "default", repo: As
         checkpoints = await repo.get_checkpoints_for_run(run_id)
         checkpoint_infos = []
         for cp in checkpoints:
-            metadata = cp.metadata if cp.metadata else {}
+            metadata = cp.checkpoint_metadata if cp.checkpoint_metadata else {}
             checkpoint_infos.append(CheckpointInfo(
                 id=cp.id,
                 checkpoint_type=cp.checkpoint_type,
