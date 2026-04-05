@@ -158,7 +158,8 @@ class TestBuildPipelineFromConfig:
         # We'll need an orchestrator instance
         from pipeline.orchestrator import Orchestrator
         orch = Orchestrator(project_id="test_project")
-        tasks = orch.build_from_config(config)
+        dag = orch.build_from_config(config)
+        tasks = dag.tasks
 
         assert len(tasks) == 2
         assert tasks[0].name == "pm"
@@ -183,7 +184,8 @@ class TestBuildPipelineFromConfig:
         )
 
         orch = Orchestrator(project_id="test_project")
-        tasks = orch.build_from_config(config)
+        dag = orch.build_from_config(config)
+        tasks = dag.tasks
 
         assert tasks[0].task == "Custom prompt for: {feature}"
 
@@ -247,7 +249,8 @@ class TestDagAndEstimation:
         )
 
         orch = Orchestrator(project_id="test")
-        tasks = orch.build_from_config(config)
+        dag_result = orch.build_from_config(config)
+        tasks = dag_result.tasks
 
         dag = build_dag_dict(tasks)
 
@@ -276,7 +279,8 @@ class TestDagAndEstimation:
         )
 
         orch = Orchestrator(project_id="test")
-        tasks = orch.build_from_config(config)
+        dag_result = orch.build_from_config(config)
+        tasks = dag_result.tasks
 
         cost = estimate_cost(tasks)
         assert cost > 0
@@ -300,7 +304,8 @@ class TestDagAndEstimation:
         )
 
         orch = Orchestrator(project_id="test")
-        tasks = orch.build_from_config(config)
+        dag_result = orch.build_from_config(config)
+        tasks = dag_result.tasks
 
         duration = estimate_duration(tasks)
         assert duration > 0

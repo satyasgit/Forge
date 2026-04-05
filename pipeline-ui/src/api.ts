@@ -7,6 +7,9 @@ import type {
   PipelineRunResponse,
   RunPipelineRequest,
   PipelineConfig,
+  CheckpointListResponse,
+  CheckpointDecisionRequest,
+  ResumeResponse,
 } from './types';
 
 const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:8000/api';
@@ -51,6 +54,22 @@ export async function runPipeline(request: RunPipelineRequest): Promise<Pipeline
 
 export async function getHealth() {
   const response = await api.get('/pipelines/health');
+  return response.data;
+}
+
+// Checkpoint API
+export async function getCheckpoints(runId: string, projectId: string = 'default'): Promise<CheckpointListResponse> {
+  const response = await api.get<CheckpointListResponse>(`/pipelines/${runId}/checkpoints`, {
+    params: { project_id: projectId },
+  });
+  return response.data;
+}
+
+export async function resumeCheckpoint(
+  runId: string,
+  decision: CheckpointDecisionRequest
+): Promise<ResumeResponse> {
+  const response = await api.post<ResumeResponse>(`/pipelines/resume/${runId}`, decision);
   return response.data;
 }
 

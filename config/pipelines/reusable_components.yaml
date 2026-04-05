@@ -1,0 +1,70 @@
+name: "reusable_components"
+description: "Demonstrates reusable pipeline components (subgraphs) for standard CI/CD and security workflows."
+project_types:
+  - web
+  - mobile
+  - api
+  - saas
+version: "1.0"
+
+# Define reusable subgraphs
+subgraphs:
+  standard_ci_cd:
+    description: "Standard CI/CD pipeline with build, test, deploy stages"
+    agents:
+      - agent: "build"
+        task: "Build the application and compile artifacts"
+      - agent: "test"
+        task: "Run unit and integration tests"
+      - agent: "security_scan"
+        task: "Scan build artifacts for security vulnerabilities"
+      - agent: "deploy_staging"
+        task: "Deploy to staging environment for QA"
+    edges:
+      - source: build
+        target: test
+      - source: test
+        target: security_scan
+      - source: security_scan
+        target: deploy_staging
+
+  full_security_audit:
+    description: "Comprehensive security audit including SAST, DAST, and dependency checks"
+    agents:
+      - agent: "sast"
+        task: "Static Application Security Testing (SAST) analysis"
+      - agent: "dast"
+        task: "Dynamic Application Security Testing (DAST)"
+      - agent: "dependency_check"
+        task: "Check dependencies for known vulnerabilities (CVE)"
+      - agent: "security_review"
+        task: "Manual security review of findings"
+    edges:
+      - source: sast
+        target: dast
+      - source: dast
+        target: dependency_check
+      - source: dependency_check
+        target: security_review
+
+# Main pipeline using subgraphs and regular agents
+agents:
+  - agent: "pm"
+    task: "Create PRD for: {feature}"
+  - agent: "standard_ci_cd"  # Subgraph reference
+  - agent: "full_security_audit"  # Subgraph reference
+  - agent: "qa"
+    task: "End-to-end testing on staging: {feature}"
+  - agent: "devops"
+    task: "Production deployment and monitoring setup for: {feature}"
+
+# Define pipeline-level edges
+edges:
+  - source: pm
+    target: standard_ci_cd
+  - source: standard_ci_cd
+    target: full_security_audit
+  - source: full_security_audit
+    target: qa
+  - source: qa
+    target: devops

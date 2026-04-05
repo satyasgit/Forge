@@ -6,6 +6,9 @@ import type {
   PipelineEdge,
   ValidationResponse,
   PipelinePreviewResponse,
+  CheckpointListResponse,
+  CheckpointDecisionRequest,
+  ResumeResponse,
 } from '../types';
 import * as api from '../api';
 
@@ -50,6 +53,15 @@ interface PipelineStore {
   isLoading: boolean;
   error: string | null;
   runPipeline: (feature: string, projectId: string) => Promise<string | null>;
+  runId: string | null;  // Current pipeline run ID (for checkpoints)
+  isPaused: boolean;
+  checkpoints: CheckpointListResponse['checkpoints'];
+  setRunId: (runId: string | null) => void;
+  setIsPaused: (paused: boolean) => void;
+  setCheckpoints: (checkpoints: CheckpointListResponse['checkpoints']) => void;
+  pollCheckpoints: () => Promise<void>;  // Poll for pending checkpoints
+  approveCheckpoint: (checkpointId: string, approver?: string, reason?: string) => Promise<void>;
+  rejectCheckpoint: (checkpointId: string, approver?: string, reason?: string) => Promise<void>;
 
   // Utils
   generateId: () => string;
@@ -139,6 +151,9 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
       selectedTemplate: null,
       validationResult: null,
       previewResult: null,
+      runId: null,
+      isPaused: false,
+      checkpoints: [],
     }),
 
   // Graph
@@ -168,9 +183,11 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
       .filter((a) => a.enabled)
       .map((agentConfig) => {
         const agentName = agentConfig.agent;
+        // Check if this is a checkpoint agent
+        const isCheckpoint = agentName === 'checkpoint' || agentConfig.meta?.checkpoint;
         return {
           id: agentName,
-          type: 'agent',
+          type: isCheckpoint ? ('checkpoint' as const) : ('agent' as const),
           position: DEFAULT_POSITIONS[agentName] || {
             x: Math.random() * 400,
             y: Math.random() * 300,
@@ -179,6 +196,12 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
             agentName,
             agentRole: AGENT_ROLES[agentName] || agentName,
             config: agentConfig,
+            ...(isCheckpoint && {
+              isCheckpoint: true,
+              checkpointType: agentConfig.meta?.checkpoint?.checkpoint_type || 'human_approval',
+              checkpointStatus: 'pending',
+              checkpointMessage: agentConfig.meta?.checkpoint?.message || 'Action required',
+            }),
           },
         };
       });
@@ -222,7 +245,7 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
         isLoading: false,
         nodes: result.dag.nodes.map((n) => ({
           id: n.id,
-          type: n.type as 'agent',
+          type: n.type as 'agent' | 'checkpoint',
           position: n.position,
           data: {
             agentName: n.data.agentName,
@@ -236,12 +259,19 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
     }
   },
 
-  // Execution
+  // Execution & Checkpoints
   isLoading: false,
   error: null,
+  runId: null,
+  isPaused: false,
+  checkpoints: [],
+  setRunId: (runId) => set({ runId }),
+  setIsPaused: (isPaused) => set({ isPaused }),
+  setCheckpoints: (checkpoints) => set({ checkpoints }),
+
   runPipeline: async (feature: string, projectId: string) => {
     const { customConfig } = get();
-    set({ isLoading: true, error: null });
+    set({ isLoading: true, error: null, isPaused: false, checkpoints: [] });
     try {
       const result = await api.runPipeline({
         feature,
@@ -249,11 +279,144 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
         config: customConfig,
       });
       set({ isLoading: false });
-      // API returns {"run": {"job_id": "...", "status": "pending"}, "message": "...", "success": true}
-      return result.run?.job_id ?? null;
+      // API returns {"run": {"job_id": "...", "status": "pending"}, "run_id": "...", "message": "...", "success": true}
+      const jobId = result.run?.job_id ?? null;
+      const runId = result.run?.run_id ?? null;
+      if (runId) {
+        set({ runId });
+        // Start polling for checkpoints
+        get().startCheckpointPolling(runId);
+      }
+      return jobId;
     } catch (err: any) {
       set({ error: err.message || 'Pipeline run failed', isLoading: false });
       return null;
+    }
+  },
+
+  // Checkpoint polling (runs in background)
+  pollingInterval: null as ReturnType<typeof setInterval> | null,
+  startCheckpointPolling: (runId: string) => {
+    if (get().pollingInterval) {
+      clearInterval(get().pollingInterval);
+    }
+    // Poll every 3 seconds
+    const interval = setInterval(async () => {
+      await get().pollCheckpoints(runId);
+    }, 3000);
+    set({ pollingInterval: interval });
+  },
+  stopCheckpointPolling: () => {
+    if (get().pollingInterval) {
+      clearInterval(get().pollingInterval);
+      set({ pollingInterval: null });
+    }
+  },
+
+  pollCheckpoints: async (runId: string) => {
+    const { runId: currentRunId, isPaused } = get();
+    if (!runId || runId !== currentRunId || isPaused) return; // Already paused, don't poll
+
+    try {
+      const data = await api.getCheckpoints(runId, get().customConfig.name || 'default');
+      const pendingCheckpoints = data.checkpoints.filter((c) => c.status === 'pending');
+      set({ checkpoints: data.checkpoints });
+
+      if (pendingCheckpoints.length > 0 && !isPaused) {
+        // Pipeline is waiting for approval
+        set({ isPaused: true });
+        // Mark checkpoint nodes as pending
+        const nodes = get().nodes.map((node) => {
+          if (node.data.checkpointId && pendingCheckpoints.some((c) => c.id === node.data.checkpointId)) {
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                checkpointStatus: 'pending',
+              },
+            };
+          }
+          return node;
+        });
+        set({ nodes });
+      }
+
+      // Check if all checkpoints are resolved (approved/rejected)
+      const resolved = data.checkpoints.every((c) => c.status !== 'pending');
+      if (resolved && data.checkpoints.length > 0) {
+        // Pipeline should have resumed or finished - stop polling
+        get().stopCheckpointPolling();
+        // Refresh node statuses
+        const nodes = get().nodes.map((node) => {
+          const checkpoint = data.checkpoints.find((c) => c.id === node.data.checkpointId);
+          if (checkpoint) {
+            return {
+              ...node,
+              data: {
+                ...node.data,
+                checkpointStatus: checkpoint.status as 'approved' | 'rejected',
+              },
+            };
+          }
+          return node;
+        });
+        set({ nodes, isPaused: false });
+      }
+    } catch (err: any) {
+      console.error('Failed to poll checkpoints:', err);
+    }
+  },
+
+  approveCheckpoint: async (checkpointId: string, approver?: string, reason?: string) => {
+    const { runId } = get();
+    if (!runId) throw new Error('No active pipeline run');
+
+    const decision: CheckpointDecisionRequest = {
+      decision: 'approved',
+      approver,
+      reason,
+    };
+    const result = await api.resumeCheckpoint(runId, decision);
+
+    set({
+      isPaused: result.status === 'paused',
+      checkpoints: get().checkpoints.map((c) =>
+        c.id === checkpointId ? { ...c, status: 'approved', approver } : c
+      ),
+    });
+
+    if (result.status !== 'paused') {
+      // Pipeline completed or aborted - stop polling
+      get().stopCheckpointPolling();
+      if (result.status === 'completed') {
+        alert('✅ Pipeline completed successfully!');
+      } else if (result.status === 'aborted') {
+        alert(`❌ Pipeline aborted: ${result.summary || 'Checkpoint rejected'}`);
+      }
+    }
+  },
+
+  rejectCheckpoint: async (checkpointId: string, approver?: string, reason?: string) => {
+    const { runId } = get();
+    if (!runId) throw new Error('No active pipeline run');
+
+    const decision: CheckpointDecisionRequest = {
+      decision: 'rejected',
+      approver,
+      reason,
+    };
+    const result = await api.resumeCheckpoint(runId, decision);
+
+    set({
+      isPaused: result.status === 'paused',
+      checkpoints: get().checkpoints.map((c) =>
+        c.id === checkpointId ? { ...c, status: 'rejected', approver } : c
+      ),
+    });
+
+    get().stopCheckpointPolling();
+    if (result.status === 'aborted') {
+      alert(`❌ Pipeline aborted: ${reason || 'Checkpoint rejected'}`);
     }
   },
 

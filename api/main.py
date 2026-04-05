@@ -2,9 +2,11 @@
 FastAPI application — main entry point.
 Run: uvicorn api.main:app --reload --port 8000
 """
+import json
 import logging
 import uuid
 from contextlib import asynccontextmanager
+from typing import Any
 
 from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -21,9 +23,12 @@ from pipeline.config_loader import (
     estimate_cost,
     estimate_duration,
 )
+from pipeline.repository import get_async_repository, AsyncPipelineRepository
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+
+logger = logging.getLogger(__name__)
 
 # In-memory job store (swap for Redis in production)
 _jobs: dict[str, dict] = {}
@@ -51,6 +56,16 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Database Dependency ───────────────────────────────────────────────────────
+
+from fastapi import Depends
+
+async def get_repo() -> AsyncPipelineRepository:
+    """Dependency for async repository."""
+    async with get_async_repository() as repo:
+        yield repo
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -82,6 +97,33 @@ class JobStatus(BaseModel):
     results: dict | None = None
     summary: str | None = None
     error: str | None = None
+    run_id: str | None = None  # Pipeline orchestrator run ID (for resume)
+
+
+class CheckpointDecisionRequest(BaseModel):
+    """Request to approve or reject a checkpoint."""
+    decision: str = Field(..., description="'approved' or 'rejected'")
+    approver: str | None = Field(None, description="Who made the decision")
+    reason: str | None = Field(None, description="Reason for decision")
+
+
+class CheckpointInfo(BaseModel):
+    """Checkpoint details."""
+    id: str
+    checkpoint_type: str
+    agent_name: str
+    status: str
+    message: str
+    created_at: str
+    approver: str | None = None
+    metadata: dict[str, Any] | None = None
+
+
+class CheckpointListResponse(BaseModel):
+    """List of checkpoints for a run."""
+    project_id: str
+    run_id: str
+    checkpoints: list[CheckpointInfo]
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -100,11 +142,12 @@ def _register_all_agents():
     from agents.devops_agent import DevOpsAgent
     from agents.ui_ux_agent import UIUXAgent
     from agents.monetisation_agent import MonetisationAgent
+    from agents.checkpoint_agent import CheckpointAgent
 
     for cls in [
         PMAgent, FrontendAgent, BackendAgent, MobileAgent,
         SecurityAgent, QAAgent, CodeReviewAgent, DevOpsAgent,
-        UIUXAgent, MonetisationAgent
+        UIUXAgent, MonetisationAgent, CheckpointAgent
     ]:
         register_agent(cls)
 
@@ -129,24 +172,70 @@ def health():
 async def run_pipeline(req: BuildFeatureRequest, background: BackgroundTasks):
     """Kick off the full multi-agent build pipeline asynchronously."""
     job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"status": "pending", "progress": {}, "results": None}
+    _jobs[job_id] = {"status": "pending", "progress": {}, "results": None, "run_id": None}
 
     async def _run():
-        import asyncio
-        _jobs[job_id]["status"] = "running"
-        try:
-            orch = Orchestrator(req.project_id)
-            tasks = make_full_app_pipeline(req.description, req.project_id)
-            # Filter to requested agents
-            tasks = [t for t in tasks if t.name in req.agents]
-            run: PipelineRun = await orch.run(tasks)
-            _jobs[job_id].update({
-                "status": "done" if not run.aborted else "aborted",
-                "results": {k: v.to_dict() for k, v in run.results.items()},
-                "summary": run.summary(),
-            })
-        except Exception as e:
-            _jobs[job_id].update({"status": "failed", "error": str(e)})
+        from datetime import datetime, timezone
+        from pipeline.repository import get_async_db
+        async with get_async_db() as db:
+            repo = AsyncPipelineRepository(db)
+            # Create pipeline run record
+            config_dict = {
+                "name": f"job-{job_id}",
+                "description": req.description,
+                "agents": [{"agent": a, "enabled": True} for a in req.agents],
+                "version": "1.0",
+            }
+            run_record = await repo.create_run(
+                project_id=req.project_id,
+                config=config_dict,
+                job_id=job_id
+            )
+            # Store run_id in job for correlation
+            _jobs[job_id]["run_id"] = run_record.id
+
+            _jobs[job_id]["status"] = "running"
+            try:
+                orch = Orchestrator(req.project_id, repository=repo)
+                tasks = make_full_app_pipeline(req.description, req.project_id)
+                # Filter to requested agents
+                tasks = [t for t in tasks if t.name in req.agents]
+                run: PipelineRun = await orch.run(tasks, run_id=run_record.id)
+
+                # Determine status
+                if run.paused:
+                    status = "paused"
+                elif run.aborted:
+                    status = "aborted"
+                else:
+                    status = "done"
+
+                # Update pipeline run record
+                await repo.update_run_status(
+                    run_id=run_record.id,
+                    status=status,
+                    finished_at=datetime.now(timezone.utc) if not run.paused else None,
+                    total_cost=run.total_cost,
+                )
+
+                _jobs[job_id].update({
+                    "status": status,
+                    "results": {k: v.to_dict() for k, v in run.results.items()},
+                    "summary": run.summary(),
+                    "run_id": run.run_id,
+                })
+            except Exception as e:
+                logger.error(f"Pipeline run {job_id} failed: {e}", exc_info=True)
+                _jobs[job_id].update({
+                    "status": "failed",
+                    "error": str(e)
+                })
+                # Mark run as failed
+                await repo.update_run_status(
+                    run_id=run_record.id,
+                    status="failed",
+                    finished_at=datetime.now(timezone.utc),
+                )
 
     background.add_task(_run)
     return JobStatus(job_id=job_id, status="pending")
@@ -291,7 +380,8 @@ def preview_pipeline(req: PipelineConfigAPI):
     # Build tasks (resolves dependencies)
     try:
         orchestrator = Orchestrator(project_id="preview")
-        tasks = orchestrator.build_from_config(config)
+        dag_result = orchestrator.build_from_config(config)
+        tasks = dag_result.tasks
     except ValueError as e:
         raise HTTPException(400, f"Failed to build pipeline: {e}")
 
@@ -324,40 +414,82 @@ async def run_custom_pipeline(req: PipelineRunRequest, background: BackgroundTas
         req: PipelineRunRequest with config, feature, project_id
     """
     job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"status": "pending", "progress": {}, "results": None}
+    _jobs[job_id] = {"status": "pending", "progress": {}, "results": None, "run_id": None}
 
     async def _run():
-        try:
-            _jobs[job_id]["status"] = "running"
-            orch = Orchestrator(req.project_id)
-
-            # Convert API config to core config and build tasks
+        from datetime import datetime, timezone
+        from pipeline.repository import get_async_db
+        async with get_async_db() as db:
+            repo = AsyncPipelineRepository(db)
+            # Create pipeline run record
             config_dict = req.config.dict()
-            from pipeline.config_loader import PipelineConfig
-            config = PipelineConfig(**config_dict)
-            tasks = orch.build_from_config(config)
+            # Add feature description to config for record
+            config_dict["feature"] = req.feature
+            run_record = await repo.create_run(
+                project_id=req.project_id,
+                config=config_dict,
+                job_id=job_id
+            )
+            _jobs[job_id]["run_id"] = run_record.id
 
-            # Substitute template variables
-            for task in tasks:
-                if task.task:
-                    task.task = task.task.format(
-                        feature=req.feature,
-                        project_id=req.project_id
-                    )
+            _jobs[job_id]["status"] = "running"
+            try:
+                orch = Orchestrator(req.project_id, repository=repo)
 
-            # Run
-            run: PipelineRun = await orch.run(tasks)
-            _jobs[job_id].update({
-                "status": "done" if not run.aborted else "aborted",
-                "results": {k: v.to_dict() for k, v in run.results.items()},
-                "summary": run.summary(),
-            })
-        except Exception as e:
-            logging.error(f"Pipeline run {job_id} failed: {e}", exc_info=True)
-            _jobs[job_id].update({
-                "status": "failed",
-                "error": str(e)
-            })
+                # Convert API config to core config and build tasks
+                from pipeline.config_loader import PipelineConfig
+                config = PipelineConfig(**config_dict)
+                dag = orch.build_from_config(config)
+                tasks = dag.tasks
+
+                # Substitute template variables
+                for task in tasks:
+                    if task.task:
+                        task.task = task.task.format(
+                            feature=req.feature,
+                            project_id=req.project_id
+                        )
+
+                # Update dag with modified tasks
+                dag.tasks = tasks
+
+                # Run (pass run_id for correlation)
+                run: PipelineRun = await orch.run(dag, run_id=run_record.id)
+
+                # Determine status
+                if run.paused:
+                    status = "paused"
+                elif run.aborted:
+                    status = "aborted"
+                else:
+                    status = "done"
+
+                # Update pipeline run record
+                await repo.update_run_status(
+                    run_id=run_record.id,
+                    status=status,
+                    finished_at=datetime.now(timezone.utc) if not run.paused else None,
+                    total_cost=run.total_cost,
+                )
+
+                _jobs[job_id].update({
+                    "status": status,
+                    "results": {k: v.to_dict() for k, v in run.results.items()},
+                    "summary": run.summary(),
+                    "run_id": run.run_id,
+                })
+            except Exception as e:
+                logger.error(f"Pipeline run {job_id} failed: {e}", exc_info=True)
+                _jobs[job_id].update({
+                    "status": "failed",
+                    "error": str(e)
+                })
+                # Mark run as failed
+                await repo.update_run_status(
+                    run_id=run_record.id,
+                    status="failed",
+                    finished_at=datetime.now(timezone.utc),
+                )
 
     background.add_task(_run)
     return PipelineRunResponse(
@@ -367,20 +499,142 @@ async def run_custom_pipeline(req: PipelineRunRequest, background: BackgroundTas
     )
 
 
+@app.get("/api/pipelines/{run_id}/checkpoints", response_model=CheckpointListResponse)
+async def get_run_checkpoints(run_id: str, project_id: str = "default", repo: AsyncPipelineRepository = Depends(get_repo)):
+    """
+    Get all checkpoints for a specific pipeline run.
+    """
+    try:
+        # Get run to verify it exists and get project_id
+        run = await repo.get_run(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+        # Use actual project_id from run if different from query param
+        actual_project_id = run.project_id
+
+        checkpoints = await repo.get_checkpoints_for_run(run_id)
+        checkpoint_infos = []
+        for cp in checkpoints:
+            metadata = cp.metadata if cp.metadata else {}
+            checkpoint_infos.append(CheckpointInfo(
+                id=cp.id,
+                checkpoint_type=cp.checkpoint_type,
+                agent_name=cp.agent_name,
+                status=cp.status,
+                message=cp.message or "",
+                created_at=cp.created_at.isoformat() if cp.created_at else "",
+                approver=cp.approver,
+                metadata=metadata,
+            ))
+        return CheckpointListResponse(project_id=actual_project_id, run_id=run_id, checkpoints=checkpoint_infos)
+    except Exception as e:
+        logger.error(f"Failed to get checkpoints for run {run_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/pipelines/resume/{run_id}")
+async def resume_pipeline(
+    run_id: str,
+    req: CheckpointDecisionRequest,
+    background: BackgroundTasks,
+    repo: AsyncPipelineRepository = Depends(get_repo)
+):
+    """
+    Resume a paused pipeline by making a checkpoint decision (approve/reject).
+    """
+    # Get pipeline run to find project_id
+    run = await repo.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail=f"No paused run found with ID {run_id}")
+
+    project_id = run.project_id
+    orch = Orchestrator(project_id, repository=repo)
+    try:
+        result = await orch.resume(
+            run_id=run_id,
+            decision=req.decision,
+            approver=req.approver,
+            reason=req.reason
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # Determine status
+    if run.paused:
+        status = "paused"
+    elif run.aborted:
+        status = "aborted"
+    else:
+        status = "completed"
+
+    # Update any associated job status
+    for jid, jinfo in _jobs.items():
+        if jinfo.get("run_id") == run_id:
+            jinfo["status"] = status
+            jinfo["results"] = {k: v.to_dict() for k, v in run.results.items()}
+            jinfo["summary"] = run.summary()
+            if status == "aborted":
+                jinfo["error"] = run.abort_reason
+            break
+
+    return {
+        "run_id": run.run_id,
+        "status": status,
+        "checkpoint_id": run.checkpoint_id,
+        "checkpoint_type": run.checkpoint_type,
+        "results": {k: v.to_dict() for k, v in run.results.items()},
+        "summary": run.summary(),
+    }
+
+
 @app.get("/api/projects/{project_id}/pipelines/history", response_model=PipelineHistoryResponse)
-def get_pipeline_history(project_id: str, limit: int = 20):
+async def get_pipeline_history(project_id: str, limit: int = 20, repo: AsyncPipelineRepository = Depends(get_repo)):
     """
     Get recent pipeline runs for a project.
 
-    Note: Requires ProjectMemory to store pipeline history.
-    This is a stub - full implementation in Phase 4.
+    Returns history of pipeline executions with cost, duration, and status.
     """
-    # Placeholder - will be implemented in Phase 4 with memory integration
-    return PipelineHistoryResponse(
-        project_id=project_id,
-        runs=[],
-        total_cost_usd=0.0,
-    )
+    try:
+        # Get pipeline runs from database
+        runs = await repo.list_runs(project_id=project_id, limit=limit)
+
+        history_items = []
+        total_cost_usd = 0.0
+
+        for run in runs:
+            # Extract config name and agent count from stored config
+            config = run.config or {}
+            config_name = config.get("name", "Unnamed Pipeline")
+            agent_count = len(config.get("agents", []))
+
+            # Calculate duration from run timing
+            duration_seconds = 0.0
+            if run.started_at and run.finished_at:
+                duration_seconds = (run.finished_at - run.started_at).total_seconds()
+
+            # Get cost from run record
+            cost_usd = run.total_cost or 0.0
+            total_cost_usd += cost_usd
+
+            history_items.append(PipelineHistoryItem(
+                run_id=run.id,
+                timestamp=run.created_at.isoformat() if run.created_at else "",
+                config_name=config_name,
+                status=run.status,
+                cost_usd=cost_usd,
+                duration_seconds=duration_seconds,
+                agent_count=agent_count,
+            ))
+
+        return PipelineHistoryResponse(
+            project_id=project_id,
+            runs=history_items,
+            total_cost_usd=total_cost_usd,
+        )
+    except Exception as e:
+        logger.error(f"Failed to get pipeline history for project {project_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/pipelines/health")

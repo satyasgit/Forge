@@ -84,16 +84,55 @@ export interface RunPipelineRequest {
   config: PipelineConfig;
 }
 
+// Checkpoint API types
+export interface CheckpointInfo {
+  id: string;
+  checkpoint_type: string;
+  agent_name: string;
+  status: string;
+  message: string;
+  created_at: string;
+  approver?: string;
+  metadata?: Record<string, any>;
+}
+
+export interface CheckpointListResponse {
+  project_id: string;
+  run_id: string;
+  checkpoints: CheckpointInfo[];
+}
+
+export interface CheckpointDecisionRequest {
+  decision: 'approved' | 'rejected';
+  approver?: string;
+  reason?: string;
+}
+
+export interface ResumeResponse {
+  run_id: string;
+  status: 'completed' | 'aborted' | 'paused';
+  checkpoint_id?: string;
+  checkpoint_type?: string;
+  results?: Record<string, any>;
+  summary?: string;
+}
+
 // React Flow types
 export interface NodeData {
   agentName: string;
   agentRole: string;
   config?: AgentTaskConfig;
+  // Checkpoint-specific fields
+  isCheckpoint?: boolean;
+  checkpointId?: string;
+  checkpointType?: string;
+  checkpointStatus?: 'pending' | 'approved' | 'rejected' | 'timeout';
+  checkpointMessage?: string;
 }
 
 export interface PipelineNode {
   id: string;
-  type: 'agent';
+  type: 'agent' | 'checkpoint';
   position: { x: number; y: number };
   data: NodeData;
 }

@@ -1,8 +1,8 @@
 # Implementation Status - Configurable Agent System
 
-**Last Updated**: 2026-04-04 (Phase 2 API complete, UI ready to start)
-**Current Phase**: Phase 2 (API ✅ Complete | UI 🚧 Next)
-**Recovery Guide**: See `docs/IMPLEMENTATION_PLAN_CONFIGURABLE_AGENTS.md`
+**Last Updated**: 2026-04-05 (Phase 4 Repository & History API complete)
+**Current Phase**: Phase 4 (Persistent Storage ✅ | History API ✅ | In Progress: Setup & Polish)
+**Recovery Guide**: See `docs/PHASE4_POLISH_MARKETPLACE_PLAN.md` and `ARCHITECTURE_RECOMMENDATIONS.md`
 
 ---
 
@@ -13,8 +13,23 @@
 | **Phase 1: Core Config** | ✅ Complete | 27/27 passing | Done |
 | **Phase 2: API** | ✅ Complete | 32/32 passing | Done |
 | **Phase 2: Visual UI** | ✅ Complete | Build: 0 errors, 352 kB | Phase 3 |
-| Phase 3: Advanced Orchestration | ⏳ Blocked | - | After UI |
-| Phase 4: Polish + Marketplace | ⏳ Blocked | - | After Phase 3 |
+| **Phase 3: Advanced Orchestration** | ✅ Complete | See Phase 3 details | Phase 4 |
+| - Conditional Edges | ✅ Complete | `test_conditional_execution.py` | - |
+| - Subgraphs | ✅ Complete | `test_subgraph_expansion.py` | - |
+| - Checkpoints | ✅ Complete | Backend + UI | Testing & polish |
+| - UI Integration | ✅ Complete | CheckpointPanel, node viz, polling | Final testing |
+| **Phase 4: Polish + Marketplace** | 🚧 In Progress | Repository layer, History API | Setup DB, continue polish |
+| - Persistent Storage (PostgreSQL) | ✅ Complete | `pipeline/repository.py`, `pipeline/models_database.py`, tests | Need DB driver & setup |
+| - History API | ✅ Complete | `GET /api/projects/{project_id}/pipelines/history` returns DB data | Need DB setup to test |
+| - Template Import/Export | ⏳ Not started | - | After DB setup |
+| - History UI | ⏳ Not started | UI exists but needs API integration | After DB setup |
+| - Analytics Dashboard | ⏳ Not started | - | Later |
+| - CLI Tool | ⏳ Not started | - | Later |
+| - Production Polish | ⏳ Not started | - | Later |
+| - Testing & QA | ⏳ Ongoing | Repository tests pass (SQLite) | Full E2E tests |
+
+**Next Phase**: Phase 4 (Polish + Marketplace) - Ready to start!
+**See**: `docs/PHASE4_POLISH_MARKETPLACE_PLAN.md` for detailed plan
 
 **Total Tests Passing**: 59/59 (100%)
 **UI Build**: ✅ Successful (TypeScript clean, 112 kB gzipped)
@@ -224,13 +239,31 @@ See `docs/IMPLEMENTATION_PLAN_CONFIGURABLE_AGENTS.md` for detailed Phase 2 UI sp
   - **Not related** to configurable pipeline system
   - Core pipeline functionality fully verified and working
 
-### New (Introduce in Phase 2)
+### Current Blockers (Must Fix for E2E)
+
+- **Missing PostgreSQL driver**: `psycopg2` not installed → DB connection fails
+  - Fix: `pip install psycopg2-binary` OR use SQLite fallback by setting empty DATABASE_URL
+- **Database not initialized**: Tables need to be created
+  - Fix: Run `python -c "from pipeline.models_database import init_db; import asyncio; asyncio.run(init_db())"`
+  - Or let FastAPI auto-create on first run (dev mode)
+- **Default DB configuration**: `settings.database_url` defaults to PostgreSQL
+  - To use SQLite (no Postgres needed): set `DATABASE_URL=` (empty) in .env
+  - Or install Postgres and create database: `createdb ai_agent_org`
+
+### Resolved in Phase 4
+
+- [x] History endpoint stubbed → Implemented with repository layer ✅
+- [x] No persistence layer → Repository pattern with PostgreSQL/SQLite ✅
+- [x] Stubbed memory → Full CRUD via `AsyncPipelineRepository` ✅
+
+### New (From Phase 2/3)
 
 - **In-memory job storage**: Jobs lost on server restart (use Redis in production)
-- **History endpoint stubbed**: Returns empty list; needs DB persistence
-- **No authentication**: API endpoints unprotected (Phase 3/4 concern)
+- **No authentication**: API endpoints unprotected (Phase 4/5 concern)
 - **No rate limiting**: Should add per-IP/per-tenant limits
 - **Pydantic v2 deprecations**: `.dict()` → `.model_dump()` warnings (low priority)
+- **No Alembic migrations**: Using `create_all` (ok for dev, need migrations for prod)
+- **Logger import timing**: Module-level imports cause lint warnings (minor)
 
 ---
 
@@ -294,8 +327,64 @@ See `docs/IMPLEMENTATION_PLAN_CONFIGURABLE_AGENTS.md` for detailed Phase 2 UI sp
 
 ---
 
-## 🗓️ Recent Changes (2026-04-04)
+## 🗓️ Recent Changes (2026-04-05)
 
+**Phase 4: Repository & History API - Complete**
+- [x] Created `pipeline/repository.py` - Repository layer with sync/async implementations:
+  - `PipelineRepository` (sync) - for migrations, scripts
+  - `AsyncPipelineRepository` (async) - for FastAPI routes
+  - CRUD for pipeline runs, agent results, checkpoints, jobs
+- [x] Created `pipeline/models_database.py` - Database models (SQLAlchemy 2.0+):
+  - `PipelineRunDB` - Pipeline execution records
+  - `AgentResultDB` - Individual agent results
+  - `CheckpointDB` - Checkpoint approvals (table: `pipeline_checkpoints` to avoid conflict)
+  - `JobDB` - Legacy job compatibility
+- [x] Updated `GET /api/projects/{project_id}/pipelines/history` endpoint:
+  - Now uses repository instead of stub
+  - Queries database for run history
+  - Returns proper `PipelineHistoryResponse` with cost, duration, agent count
+- [x] Fixed logger definition in `api/main.py`
+- [x] Repository tests created & passing (`tests/pipeline/test_repository.py`)
+- [x] Database configuration supports:
+  - PostgreSQL (production) with asyncpg
+  - SQLite fallback (dev/testing) when DATABASE_URL empty
+- [x] Fixed potential table name conflict with memory store checkpoints
+  - Renamed repository checkpoint table to `pipeline_checkpoints`
+
+**Phase 3 UI Integration - Previously Completed**
+- [x] Extended types for checkpoint nodes (`type: 'agent' | 'checkpoint'`)
+- [x] Added checkpoint API functions (`getCheckpoints`, `resumeCheckpoint`)
+- [x] Enhanced `usePipelineStore` with checkpoint state & polling
+- [x] Created `CheckpointPanel.tsx` - approval UI overlay
+- [x] Updated `AgentNode.tsx` - octagon checkpoint styling with status badges
+- [x] Integrated panel into `App.tsx` with conditional rendering
+- [x] Automatic checkpoint polling (3s interval) on pipeline run
+- [x] State synchronization: checkpoint status → node updates
+- [x] Comprehensive docs: `docs/PHASE3_UI_INTEGRATION_SUMMARY.md`
+- [x] Updated all Phase 3 completion docs
+
+**Phase 3 Backend - Previously Completed**
+- [x] Created `agents/checkpoint_agent.py` with human_approval support
+- [x] Extended `memory/store.py` with checkpoint CRUD methods
+- [x] Enhanced `pipeline/orchestrator.py`:
+  - Added `run_id` tracking and `initial_completed` for resume
+  - Auto-pause on checkpoint agent execution
+  - New `resume()` method for continuation after approval
+  - State serialization/deserialization
+- [x] Updated `api/main.py`:
+  - `GET /api/pipelines/{run_id}/checkpoints`
+  - `POST /api/pipelines/resume/{run_id}`
+  - Job status includes `run_id` for correlation
+- [x] Checkpoint agent registered in API
+- [x] Updated `docs/PHASE3_ADVANCED_ORCHESTRATION.md`
+
+**Phase 4 Planning - Previously Completed**
+- [x] Created comprehensive Phase 4 plan: `docs/PHASE4_POLISH_MARKETPLACE_PLAN.md`
+- [x] Documented MVP vs Standard vs Full scope options
+- [x] Estimated effort: 2-6 weeks
+- [x] Defined immediate next steps for database setup
+
+**Phase 2 API - Previously Completed**
 - [x] Created `tests/api/test_pipelines.py` with 32 comprehensive tests
 - [x] All API tests passing (32/32)
 - [x] Fixed `api/pipelines_schemas.py` - settings accept `dict[str, Any]`

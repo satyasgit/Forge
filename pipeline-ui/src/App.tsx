@@ -4,6 +4,7 @@ import Sidebar from './components/Sidebar';
 import PipelineCanvas from './components/PipelineCanvas';
 import ConfigPanel from './components/ConfigPanel';
 import Toolbar from './components/Toolbar';
+import CheckpointPanel from './components/CheckpointPanel';
 import type { PipelineNode } from './types';
 
 function getAgentRole(agentName: string): string {
@@ -39,6 +40,9 @@ function App() {
     preview,
     runPipeline,
     selectNode,
+    // Checkpoint state
+    isPaused,
+    checkpoints,
   } = usePipelineStore();
 
   useEffect(() => {
@@ -111,7 +115,7 @@ function App() {
         </div>
       </header>
 
-      <div className="pipeline-builder">
+      <div className="pipeline-builder" style={{ position: 'relative' }}>
         <Sidebar
           templates={templates}
           selectedTemplate={selectedTemplate}
@@ -130,6 +134,13 @@ function App() {
         <aside className="config-panel">
           <ConfigPanel node={selectedNode} onUpdate={handleUpdateNode} onDelete={handleDeleteNode} />
         </aside>
+
+        {/* Checkpoint Panel Overlay */}
+        {isPaused && (
+          <div style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: 400, zIndex: 1000 }}>
+            <CheckpointPanel onClose={() => {}} />
+          </div>
+        )}
       </div>
     </div>
   );

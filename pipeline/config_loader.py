@@ -43,6 +43,43 @@ class AgentTaskConfig(BaseModel):
         return v
 
 
+class EdgeConfig(BaseModel):
+    """Configuration for an edge (dependency) between agents."""
+
+    source: str = Field(..., description="Source agent name")
+    target: str = Field(..., description="Target agent name")
+    condition: str | None = Field(None, description="Optional Python expression to evaluate (uses 'results' dict)")
+
+    @field_validator("condition")
+    @classmethod
+    def validate_condition(cls, v: str | None) -> str | None:
+        """Basic validation of condition expression (syntax only)."""
+        if v is None:
+            return v
+        # Very basic check - full validation happens at runtime
+        if not v.strip():
+            raise ValueError("Condition cannot be empty")
+        return v
+
+
+class SubgraphDefinition(BaseModel):
+    """Definition of a reusable subgraph (pipeline component)."""
+
+    name: str = Field(..., description="Unique subgraph identifier")
+    description: str = Field("", description="Human-readable description")
+    agents: list[AgentTaskConfig] = Field(..., description="Agents within the subgraph")
+    edges: list[EdgeConfig] = Field(default_factory=list, description="Explicit edges within subgraph")
+
+    @model_validator(mode='after')
+    def validate_no_duplicate_agents(self) -> SubgraphDefinition:
+        """Ensure no agent appears twice in subgraph."""
+        agent_names = [a.agent for a in self.agents if a.enabled]
+        if len(agent_names) != len(set(agent_names)):
+            duplicates = [name for name in agent_names if agent_names.count(name) > 1]
+            raise ValueError(f"Duplicate agents in subgraph '{self.name}': {duplicates}")
+        return self
+
+
 class PipelineConfig(BaseModel):
     """Complete pipeline configuration."""
 
@@ -52,7 +89,8 @@ class PipelineConfig(BaseModel):
     project_types: list[str] = Field(default_factory=list, description="Suitable project types (web, mobile, api, saas, etc.)")
 
     agents: list[AgentTaskConfig] = Field(..., description="List of agent configurations")
-    edges: list[dict[str, Any]] = Field(default_factory=list, description="Explicit edges (overrides auto deps)")
+    edges: list[EdgeConfig] = Field(default_factory=list, description="Explicit edges (overrides auto deps)")
+    subgraphs: dict[str, SubgraphDefinition] = Field(default_factory=dict, description="Named subgraph definitions for reuse")
 
     auto_resolve: bool = Field(True, description="Auto-add missing dependencies from global deps")
     strict_validation: bool = Field(False, description="Fail on validation warnings (vs just warn)")
@@ -62,8 +100,12 @@ class PipelineConfig(BaseModel):
 
     @model_validator(mode='after')
     def validate_no_duplicate_agents(self) -> PipelineConfig:
-        """Ensure no agent appears twice."""
-        agent_names = [a.agent for a in self.agents if a.enabled]
+        """Ensure no regular agent appears twice (subgraph refs can duplicate)."""
+        # Only check duplicates among agents that are NOT subgraph references.
+        # Subgraph references may appear multiple times; they'll be expanded with unique names.
+        agent_names = [
+            a.agent for a in self.agents if a.enabled and a.agent not in self.subgraphs
+        ]
         if len(agent_names) != len(set(agent_names)):
             duplicates = [name for name in agent_names if agent_names.count(name) > 1]
             raise ValueError(f"Duplicate agents in pipeline: {duplicates}")
@@ -78,6 +120,17 @@ class PipelineConfig(BaseModel):
     def agent_names(self) -> list[str]:
         """Return names of enabled agents."""
         return [a.agent for a in self.enabled_agents]
+
+
+# ============================================================================
+# Data Structures for Pipeline Execution
+# ============================================================================
+
+@dataclass
+class PipelineDAG:
+    """Combined tasks and edges for pipeline execution with conditional support."""
+    tasks: list[PipelineTask]
+    edges: list[EdgeConfig]  # Explicit edges with optional conditions
 
 
 # ============================================================================
@@ -324,81 +377,282 @@ def _auto_add_missing_dependencies(
     return sorted(added)
 
 
+def _expand_subgraphs(config: PipelineConfig) -> tuple[list[AgentTaskConfig], list[EdgeConfig]]:
+    """
+    Expand subgraphs in the configuration into flat lists of agents and edges.
+
+    Args:
+        config: PipelineConfig with possible subgraph references
+
+    Returns:
+        Tuple of (expanded_agents, expanded_edges)
+    """
+    subgraphs: dict[str, SubgraphDefinition] = config.subgraphs or {}
+
+    # Detect circular subgraph references
+    def detect_cycle(name: str, path: list[str]):
+        if name in path:
+            cycle = " -> ".join(path + [name])
+            raise ValueError(f"Circular subgraph reference: {cycle}")
+        if name in subgraphs:
+            for agent in subgraphs[name].agents:
+                if agent.agent in subgraphs:
+                    detect_cycle(agent.agent, path + [name])
+
+    for sg in subgraphs:
+        detect_cycle(sg, [])
+
+    def find_entry_agents(subgraph: SubgraphDefinition) -> set[str]:
+        """Agents in subgraph with no incoming internal edges."""
+        targets = {e.target for e in subgraph.edges}
+        return {a.agent for a in subgraph.agents} - targets
+
+    def find_exit_agents(subgraph: SubgraphDefinition) -> set[str]:
+        """Agents in subgraph with no outgoing internal edges."""
+        sources = {e.source for e in subgraph.edges}
+        return {a.agent for a in subgraph.agents} - sources
+
+    def expand(agent_configs: list[AgentTaskConfig], external_edges: list[EdgeConfig]) -> tuple[list[AgentTaskConfig], list[EdgeConfig]]:
+        """
+        Recursively expand agent list.
+
+        Args:
+            agent_configs: Agents to expand (may contain subgraph refs)
+            external_edges: Edges that connect these agents to the outside context
+                            (edges where source or target is an agent in agent_configs,
+                            but may reference subgraph names that need expansion)
+        Returns:
+            (expanded_agents, expanded_edges)
+        """
+        result_agents: list[AgentTaskConfig] = []
+        result_edges: list[EdgeConfig] = []
+        seen_names: set[str] = set()
+
+        # Build a map of agent name -> AgentTaskConfig for this level
+        agent_map = {a.agent: a for a in agent_configs}
+
+        # Process each agent in order
+        for agent_cfg in agent_configs:
+            name = agent_cfg.agent
+
+            if name in subgraphs:
+                # This is a subgraph reference; expand it
+                subgraph = subgraphs[name]
+                logger.debug("Expanding subgraph '%s'", name)
+
+                # Recursively expand the subgraph's own agents and internal edges
+                nested_agents, nested_edges = expand(subgraph.agents, subgraph.edges)
+
+                # Determine entry and exit agents of the subgraph (based on original names)
+                entry_orig = find_entry_agents(subgraph)
+                exit_orig = find_exit_agents(subgraph)
+
+                # We'll need to map original names to expanded names, considering possible renaming due to collisions
+                # Collect mapping from original to final expanded name(s)
+                orig_to_expanded: dict[str, list[str]] = {}
+                for na in nested_agents:
+                    # Determine original name: if prefixed, get part after ::
+                    if "::" in na.agent:
+                        # This agent came from a nested subgraph that had a prefix from that subgraph's name.
+                        # But here we need to map against the direct subgraph's defined agent names.
+                        # We need to see if the original agent name (without any prefix) is in entry_orig or exit_orig.
+                        # The agent.agent may be like "nested_sub::build" when subgraph name is "ci" and it contains nested_sub.
+                        # That's not directly matching entry_orig. Actually entry_orig are the names defined directly inside this subgraph.
+                        # So we need to reconstruct mapping: if the agent's name doesn't contain "::", then it's direct.
+                        # If it contains "::", then the original name is the suffix. But careful: The prefix used is the subgraph name of the nested subgraph.
+                        # For our purpose, we need to know which expanded agents correspond to which direct subgraph agents.
+                        # Actually nested_agents may have prefixed names only if there were collisions within the nested expansion.
+                        # They will not be prefixed with current subgraph name, but with deeper subgraph name.
+                        # The direct agents from this subgraph (i.e., first-level nested) will retain their original names (no prefix), unless there is a name collision among them.
+                        # So we can handle: if na.agent in entry_orig (direct match), then that's an entry expansion.
+                        # Also if na.agent starts with something else, we check suffix after last "::" if it matches an entry_orig? But that would be nested deeper.
+                        # However entry/exit agents are only for this subgraph's direct interface. So we only care about direct child agents (no prefix from a deeper subgraph) OR prefixed versions of direct agents if collision forced renaming.
+                        # The agent_cfg in subgraph.agents has agent names. Those directly appear in nested_agents, unless collision caused prefixed with this subgraph's name.
+                        # In our expansion algorithm, we only prefix with current subgraph name when a duplicate is detected within the same expansion level (i.e., two agents from the same subgraph or from multiple references). So a direct agent from this subgraph can be either original name or prefixed with this subgraph's name (if name collision with another agent in the same expanded set). But entry_orig contains the original names (as defined in subgraph). So we need to check if na.agent == orig, or na.agent == f"{name}::{orig}".
+                        # We'll map each original agent to a set of expanded names.
+                        pass  # We'll handle more robustly below
+                    else:
+                        # No prefix, original name is na.agent
+                        if na.agent in entry_orig:
+                            orig_to_expanded.setdefault(na.agent, []).append(na.agent)
+                        if na.agent in exit_orig:
+                            orig_to_expanded.setdefault(na.agent, []).append(na.agent)
+                # Additionally, we might have prefixed versions: if we prefixed an agent because of duplication, the name becomes f"{name}::{orig}". So we should also consider those as matching original.
+                for orig in entry_orig:
+                    prefixed = f"{name}::{orig}"
+                    # If prefixed is in expanded names (from nested_agents), add it
+                    if any(na.agent == prefixed for na in nested_agents):
+                        orig_to_expanded.setdefault(orig, []).append(prefixed)
+                for orig in exit_orig:
+                    prefixed = f"{name}::{orig}"
+                    if any(na.agent == prefixed for na in nested_agents):
+                        orig_to_expanded.setdefault(orig, []).append(prefixed)
+
+                # Process external edges that connect to/from this subgraph
+                for edge in external_edges:
+                    if edge.target == name:
+                        # Edge targets this subgraph -> connect source to all entry points
+                        for entry_orig_name in entry_orig:
+                            for exp_name in orig_to_expanded.get(entry_orig_name, [entry_orig_name]):
+                                result_edges.append(EdgeConfig(
+                                    source=edge.source,
+                                    target=exp_name,
+                                    condition=edge.condition,
+                                ))
+                    elif edge.source == name:
+                        # Edge originates from this subgraph -> connect all exit points to target
+                        for exit_orig_name in exit_orig:
+                            for exp_name in orig_to_expanded.get(exit_orig_name, [exit_orig_name]):
+                                result_edges.append(EdgeConfig(
+                                    source=exp_name,
+                                    target=edge.target,
+                                    condition=edge.condition,
+                                ))
+
+                # Add nested agents (with possible prefixing) to result
+                for na in nested_agents:
+                    if na.agent in seen_names:
+                        raise ValueError(f"Duplicate agent name after expansion: {na.agent}")
+                    result_agents.append(na)
+                    seen_names.add(na.agent)
+
+                # Include the subgraph's internal edges (they reference expanded agent names)
+                result_edges.extend(nested_edges)
+
+            else:
+                # Not a subgraph: just add the agent
+                if name in seen_names:
+                    raise ValueError(f"Duplicate agent name: {name}")
+                result_agents.append(agent_cfg)
+                seen_names.add(name)
+
+        # Add internal edges from this level's subgraph expansions (they are already included in nested_edges and passed through via recursion),
+        # but we also need to add edges that were in external_edges that connect agents within agent_configs (i.e., edges that are not involving a subgraph reference, but between two regular agents). Those should be added directly if both source and target are not subgraphs.
+        # Actually external_edges may contain edges that are between agents in agent_configs that are both not subgraphs. Those need to be added to result_edges as-is, but careful to avoid duplicates if they were already added via parent? They weren't because we are processing them now.
+        for edge in external_edges:
+            src_is_subgraph = edge.source in subgraphs
+            tgt_is_subgraph = edge.target in subgraphs
+            if not src_is_subgraph and not tgt_is_subgraph:
+                # Both are regular agents; they should be in result_agents (maybe not yet added? order may cause that)
+                # Just add the edge
+                result_edges.append(EdgeConfig(source=edge.source, target=edge.target, condition=edge.condition))
+
+        return result_agents, result_edges
+
+    # Expand root-level agents with top-level edges
+    expanded_agents, expanded_edges = expand(config.agents, config.edges)
+
+    logger.info("Expanded %d agents -> %d agents, %d edges",
+                len(config.agents), len(expanded_agents), len(expanded_edges))
+    return expanded_agents, expanded_edges
+
+
 def build_pipeline_from_config(
     config: PipelineConfig,
     agent_deps_override: dict[str, list[str]] | None = None
-) -> list[PipelineTask]:
+) -> PipelineDAG:
     """
-    Convert PipelineConfig to list of PipelineTask objects with resolved dependencies.
+    Convert PipelineConfig to PipelineDAG with tasks and conditional edges.
+
+    This function:
+    1. Expands any subgraph definitions into flat agent lists and edges
+    2. Builds dependency graph from explicit edges or implicit deps
+    3. Topologically sorts and creates PipelineTask objects
 
     Args:
         config: Validated pipeline configuration
         agent_deps_override: Override global dependencies (for testing)
 
     Returns:
-        List of PipelineTask objects in topological order
+        PipelineDAG with tasks in topological order and edges (with conditions)
 
     Raises:
-        ValueError: If dependency resolution fails
+        ValueError: If dependency resolution fails or edges reference unknown agents
     """
     from agents.agent_config import create_agent
     from pipeline.orchestrator import PipelineTask
 
-    # Load global dependencies
-    deps_file = Path(__file__).parent.parent / "config" / "agent_deps.yaml"
-    global_deps: dict[str, list[str]] = {}
-    if deps_file.exists():
-        try:
-            deps_data = load_yaml(deps_file)
-            global_deps = deps_data.get("dependencies", {})
-        except Exception as e:
-            logger.warning("Could not load agent dependencies: %s", e)
+    # Step 1: Expand subgraphs if any
+    if config.subgraphs:
+        agent_configs, explicit_edges = _expand_subgraphs(config)
+        logger.info("Subgraph expansion: %d original agents -> %d expanded",
+                    len(config.agents), len(agent_configs))
+    else:
+        agent_configs = [a for a in config.agents if a.enabled]
+        explicit_edges = config.edges
 
-    if agent_deps_override:
-        global_deps.update(agent_deps_override)
+    # Now agent_configs contains only regular AgentTaskConfig (no subgraph refs)
+    agent_names = [a.agent for a in agent_configs]
+    agent_cfg_map = {a.agent: a for a in agent_configs}
 
-    # Build dependency map
-    enabled_agents = config.enabled_agents
-    agent_names = [a.agent for a in enabled_agents]
-
+    # Determine dependency graph and edges to use
+    edges_used: list[EdgeConfig] = []
     dep_map: dict[str, set[str]] = {name: set() for name in agent_names}
 
-    # Global deps
-    for agent_name in agent_names:
-        if agent_name in global_deps:
-            for dep in global_deps[agent_name]:
-                if dep in agent_names:
-                    dep_map[agent_name].add(dep)
+    if explicit_edges:
+        # Explicit edges provided: use only these (override auto deps)
+        logger.info("Using explicit edges (%d edges)", len(explicit_edges))
 
-    # Override with per-agent depends_on
-    for agent_cfg in enabled_agents:
-        if agent_cfg.depends_on:
-            for dep in agent_cfg.depends_on:
-                if dep in agent_names:
-                    dep_map[agent_cfg.agent].add(dep)
+        # Validate edges reference known agents
+        for edge in explicit_edges:
+            if edge.source not in agent_names:
+                raise ValueError(f"Edge source '{edge.source}' not in agents. Available: {agent_names}")
+            if edge.target not in agent_names:
+                raise ValueError(f"Edge target '{edge.target}' not in agents. Available: {agent_names}")
 
-    # Auto-resolve if enabled: add missing deps as enabled agents
-    if config.auto_resolve:
-        added_agents = _auto_add_missing_dependencies(agent_names, global_deps, dep_map)
-        if added_agents:
-            logger.info("Auto-adding missing agents: %s", added_agents)
-            # In a real implementation, we'd need to also fetch these agents' configs
-            # For now, warn and continue with original set
-            warnings_msg = f"Would auto-add agents: {added_agents} (not yet implemented)"
-            logger.warning(warnings_msg)
+        edges_used = explicit_edges
+
+        # Build dep_map from edges
+        for edge in explicit_edges:
+            dep_map[edge.target].add(edge.source)
+    else:
+        # No explicit edges: use global deps + per-agent depends_on
+        logger.info("Using implicit dependencies (global deps + per-agent)")
+
+        # Load global dependencies
+        deps_file = Path(__file__).parent.parent / "config" / "agent_deps.yaml"
+        global_deps: dict[str, list[str]] = {}
+        if deps_file.exists():
+            try:
+                deps_data = load_yaml(deps_file)
+                global_deps = deps_data.get("dependencies", {})
+            except Exception as e:
+                logger.warning("Could not load agent dependencies: %s", e)
+
+        if agent_deps_override:
+            global_deps.update(agent_deps_override)
+
+        # Add global deps to dep_map
+        for agent_name in agent_names:
+            if agent_name in global_deps:
+                for dep in global_deps[agent_name]:
+                    if dep in agent_names:
+                        dep_map[agent_name].add(dep)
+
+        # Add per-agent overrides (depends_on)
+        for agent_cfg in agent_configs:
+            if agent_cfg.depends_on:
+                for dep in agent_cfg.depends_on:
+                    if dep in agent_names:
+                        dep_map[agent_cfg.agent].add(dep)
+
+        # Auto-resolve if enabled
+        if config.auto_resolve:
+            added_agents = _auto_add_missing_dependencies(agent_names, global_deps, dep_map)
+            if added_agents:
+                logger.info("Auto-adding missing agents: %s", added_agents)
+                warnings_msg = f"Would auto-add agents: {added_agents} (not yet implemented)"
+                logger.warning(warnings_msg)
 
     # Topological sort (Kahn's algorithm)
-    # in_degree[x] = number of dependencies that x has (i.e., number of agents that must run before x)
     in_degree = {name: len(dep_map.get(name, set())) for name in agent_names}
 
-    # For efficient lookup of dependents: which agents depend on a given node?
     dependents: dict[str, list[str]] = {name: [] for name in agent_names}
     for agent, deps in dep_map.items():
         for dep in deps:
             if dep in dependents:
                 dependents[dep].append(agent)
 
-    # Queue of agents with no dependencies (can run first)
     queue = [name for name, deg in in_degree.items() if deg == 0]
     ordered: list[str] = []
 
@@ -406,20 +660,17 @@ def build_pipeline_from_config(
         current = queue.pop(0)
         ordered.append(current)
 
-        # For each agent that depends on current, reduce their unmet dependencies
         for dependent in dependents[current]:
             in_degree[dependent] -= 1
             if in_degree[dependent] == 0:
                 queue.append(dependent)
 
-    # Check for circular deps (remaining agents)
     if len(ordered) != len(agent_names):
         remaining = set(agent_names) - set(ordered)
         raise ValueError(f"Circular dependency or unresolved agents: {remaining}")
 
-    # Build PipelineTask list in order
+    # Build PipelineTask list
     tasks: list[PipelineTask] = []
-    agent_cfg_map = {a.agent: a for a in enabled_agents}
 
     for agent_name in ordered:
         agent_cfg = agent_cfg_map[agent_name]
@@ -430,13 +681,12 @@ def build_pipeline_from_config(
         # Determine task prompt
         task_prompt = agent_cfg.task if agent_cfg.task else f"Execute {agent_name} agent for: {{feature}}"
 
-        # Override config if specified (AgentConfig is frozen, so create new instance)
+        # Handle config overrides (model, max_tokens)
         if agent_cfg.model or agent_cfg.max_tokens:
             import dataclasses
             from agents.agent_config import AgentConfig
 
             cfg = agent.config
-            # Use dataclasses.replace to create new config with overrides
             new_cfg = dataclasses.replace(
                 cfg,
                 model=agent_cfg.model if agent_cfg.model else cfg.model,
@@ -444,8 +694,8 @@ def build_pipeline_from_config(
             )
             agent.config = new_cfg
 
-        # Determine dependencies (previous agents in order)
-        # agents that this agent depends on
+        # Determine dependencies: all agents that appear as sources in edges_used where target == agent_name
+        # If edges_used is empty, fall back to dep_map (which has the same info from implicit deps)
         deps = [t.name for t in tasks if t.name in dep_map.get(agent_name, set())]
 
         task = PipelineTask(
@@ -455,8 +705,8 @@ def build_pipeline_from_config(
         )
         tasks.append(task)
 
-    logger.info("Built pipeline with %d agents in order: %s", len(tasks), [t.name for t in tasks])
-    return tasks
+    logger.info("Built pipeline with %d agents in order: %s (edges: %d)", len(tasks), [t.name for t in tasks], len(edges_used))
+    return PipelineDAG(tasks=tasks, edges=edges_used)
 
 
 # ============================================================================
@@ -638,6 +888,7 @@ def load_template(name: str) -> PipelineConfig | None:
 __all__ = [
     "AgentTaskConfig",
     "PipelineConfig",
+    "PipelineDAG",
     "PipelineValidationError",
     "PipelineValidationWarning",
     "ValidationResult",

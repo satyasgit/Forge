@@ -93,6 +93,7 @@ class AgentResult:
     retries: int = 0
     state: str = "done"
     artifact: AgentArtifact | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)  # For custom attributes in conditions
 
     def __post_init__(self):
         """Validate that result has meaningful output or errors."""
@@ -126,6 +127,12 @@ class AgentResult:
             "retries": self.retries,
             "state": self.state,
         }
+
+    def __getattr__(self, name: str) -> Any:
+        """Allow access to custom attributes via metadata (for conditions, etc.)."""
+        if name in self.metadata:
+            return self.metadata[name]
+        raise AttributeError(f"'{self.__class__.__name__}' object has no attribute '{name}'")
 
 
 class BaseAgent(ABC):

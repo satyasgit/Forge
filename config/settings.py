@@ -28,6 +28,13 @@ class Settings(BaseSettings):
     default_project_id: str = "default"
     memory_db_path: str = "data/agent_memory.db"
 
+    # ── Database (PostgreSQL for production) ───────────────────────────────────
+    # Empty string = use SQLite fallback (development)
+    # Set to postgresql://... for PostgreSQL (production)
+    database_url: str = ""
+    # SQLite fallback for development if database_url not set
+    use_sqlite_fallback: bool = True  # If true and database_url not set, use SQLite
+
     # ── Workspace (absolute path for safe file operations) ────────────────────
     workspace_root: str = ""   # set to absolute path; defaults to {cwd}/workspace
 

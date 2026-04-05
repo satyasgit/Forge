@@ -1,0 +1,26 @@
+name: "conditional_deploy"
+description: "Pipeline with conditional deployment based on security audit results. Deploy only if security score passes threshold."
+project_types:
+  - backend
+  - api
+  - saas
+version: "1.0"
+agents:
+  - agent: "pm"
+    task: "Create PRD for: {feature}"
+  - agent: "backend"
+    task: "Build FastAPI backend with database models for: {feature}"
+  - agent: "security"
+    task: |
+      Perform a comprehensive security audit of the backend API for: {feature}.
+      At the end of your report, include a line: "Security Score: <score>" where score is integer 0-100.
+  - agent: "devops"
+    task: "Deploy to production using Docker and Kubernetes for: {feature}"
+edges:
+  - source: pm
+    target: backend
+  - source: backend
+    target: security
+  - source: security
+    target: devops
+    condition: "result.security_score >= 80"
