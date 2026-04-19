@@ -66,7 +66,7 @@ class BackendAgent(BaseAgent):
             Produce complete runnable Python — no pseudocode.
         """).strip()
 
-    def build_feature(self, feature: str, existing_code: dict[str, str] | None = None, context: str = "", async_mode: bool = False) -> AgentResult:
+    async def build_feature(self, feature: str, existing_code: dict[str, str] | None = None, context: str = "", async_mode: bool = False) -> AgentResult:
         gaps = self._scan_for_api_gaps(existing_code or {})
         antipatterns = self._scan_for_antipatterns(existing_code or {})
         existing_block = ""
@@ -85,7 +85,7 @@ class BackendAgent(BaseAgent):
         """).strip()
         return self.run(task)
 
-    def design_schema(self, entities: list[str], relationships: str = "") -> AgentResult:
+    async def design_schema(self, entities: list[str], relationships: str = "") -> AgentResult:
         task = f"Design PostgreSQL schema for: {', '.join(entities)}\nRelationships: {relationships or 'Infer from names.'}\nApply all schema design rules. Output: SQLAlchemy models + Alembic migration + index rationale."
         return self.run(task)
 

@@ -8,9 +8,11 @@ import uuid
 from contextlib import asynccontextmanager
 from typing import Any, AsyncGenerator
 
-from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends
+from fastapi import FastAPI, BackgroundTasks, HTTPException, Depends, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+
+from communication.bus import JobStore, MessageBus, AgentMessage
 
 from config.settings import settings
 from pipeline.orchestrator import Orchestrator, make_full_app_pipeline, PipelineRun
@@ -31,8 +33,10 @@ logging.basicConfig(level=logging.INFO,
 
 logger = logging.getLogger(__name__)
 
-# In-memory job store (swap for Redis in production)
-_jobs: dict[str, dict] = {}
+# Global stores
+job_store = JobStore()
+message_bus = MessageBus()
+active_connections: list[WebSocket] = []
 
 
 @asynccontextmanager
@@ -128,6 +132,27 @@ class CheckpointListResponse(BaseModel):
     run_id: str
     checkpoints: list[CheckpointInfo]
 
+# ── Agile Models ──────────────────────────────────────────────────────────────
+
+class SprintCreate(BaseModel):
+    project_id: str
+    name: str
+    goal: str
+    duration_days: int = 14
+
+class StoryCreate(BaseModel):
+    title: str
+    description: str
+    story_points: int
+    assigned_to: str | None = None
+
+class StandupSubmit(BaseModel):
+    agent_name: str
+    completed_yesterday: list[str]
+    working_on_today: list[str]
+    blockers: list[str]
+    mood: str = "on_track"
+
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -146,11 +171,14 @@ def _register_all_agents():
     from agents.ui_ux_agent import UIUXAgent
     from agents.monetisation_agent import MonetisationAgent
     from agents.checkpoint_agent import CheckpointAgent
+    from agents.ceo_agent import CEOAgent
+    from agents.vp_eng_agent import VPEngAgent
 
     for cls in [
         PMAgent, FrontendAgent, BackendAgent, MobileAgent,
         SecurityAgent, QAAgent, CodeReviewAgent, DevOpsAgent,
-        UIUXAgent, MonetisationAgent, CheckpointAgent
+        UIUXAgent, MonetisationAgent, CheckpointAgent,
+        CEOAgent, VPEngAgent
     ]:
         register_agent(cls)
 
@@ -175,8 +203,6 @@ def health():
 async def run_pipeline(req: BuildFeatureRequest, background: BackgroundTasks):
     """Kick off the full multi-agent build pipeline asynchronously."""
     job_id = str(uuid.uuid4())
-    _jobs[job_id] = {"status": "pending", "progress": {}, "results": None, "run_id": None}
-
     async def _run():
         from datetime import datetime, timezone
         from pipeline.repository import get_async_db
@@ -194,10 +220,11 @@ async def run_pipeline(req: BuildFeatureRequest, background: BackgroundTasks):
                 config=config_dict,
                 job_id=job_id
             )
-            # Store run_id in job for correlation
-            _jobs[job_id]["run_id"] = run_record.id
+            
+            # Update run_id in job for correlation
+            await job_store.set_job(job_id, {"status": "pending", "progress": {}, "results": None, "run_id": run_record.id})
 
-            _jobs[job_id]["status"] = "running"
+            await job_store.update_job(job_id, {"status": "running"})
             try:
                 orch = Orchestrator(req.project_id, repository=repo)
                 tasks = make_full_app_pipeline(req.description, req.project_id)
@@ -221,15 +248,25 @@ async def run_pipeline(req: BuildFeatureRequest, background: BackgroundTasks):
                     total_cost=run.total_cost,
                 )
 
-                _jobs[job_id].update({
+                job_update = {
                     "status": status,
                     "results": {k: v.to_dict() for k, v in run.results.items()},
                     "summary": run.summary(),
                     "run_id": run.run_id,
-                })
+                }
+                await job_store.update_job(job_id, job_update)
+                
+                # Broadcast completion
+                await message_bus.publish(AgentMessage(
+                    sender="api",
+                    content=f"Pipeline {job_id} {status}",
+                    job_id=job_id,
+                    message_type="status_update"
+                ))
+
             except Exception as e:
                 logger.error(f"Pipeline run {job_id} failed: {e}", exc_info=True)
-                _jobs[job_id].update({
+                await job_store.update_job(job_id, {
                     "status": "failed",
                     "error": str(e)
                 })
@@ -244,9 +281,27 @@ async def run_pipeline(req: BuildFeatureRequest, background: BackgroundTasks):
     return JobStatus(job_id=job_id, status="pending")
 
 
+@app.websocket("/api/ws/status")
+async def websocket_endpoint(websocket: WebSocket):
+    await websocket.accept()
+    active_connections.append(websocket)
+    try:
+        # Listen to agent_bus:stream for all updates
+        async def _on_message(msg: AgentMessage):
+            await websocket.send_text(msg.to_json())
+        
+        await message_bus.subscribe(["stream"], _on_message)
+    except WebSocketDisconnect:
+        active_connections.remove(websocket)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        if websocket in active_connections:
+            active_connections.remove(websocket)
+
+
 @app.get("/api/pipeline/jobs/{job_id}", response_model=JobStatus)
-def get_job(job_id: str):
-    job = _jobs.get(job_id)
+async def get_job(job_id: str):
+    job = await job_store.get_job(job_id)
     if not job:
         raise HTTPException(404, "Job not found")
     return JobStatus(job_id=job_id, **job)
@@ -256,7 +311,7 @@ def get_job(job_id: str):
 async def security_audit(req: SecurityAuditRequest):
     """Run a direct security audit (synchronous — for small codebases)."""
     agent = _get_agent("security", req.project_id)
-    result = agent.run_full_audit(req.code, req.language, req.context)
+    result = await agent.run_full_audit(req.code, req.language, req.context)
     return result.to_dict()
 
 
@@ -264,7 +319,7 @@ async def security_audit(req: SecurityAuditRequest):
 async def run_single_agent(req: SingleAgentRequest):
     """Run any single agent with a custom task."""
     agent = _get_agent(req.agent, req.project_id)
-    result = agent.run(req.task, context=req.context)
+    result = await agent.run(req.task, context=req.context)
     return result.to_dict()
 
 
@@ -638,6 +693,73 @@ async def get_pipeline_history(project_id: str, limit: int = 20, repo: AsyncPipe
     except Exception as e:
         logger.error(f"Failed to get pipeline history for project {project_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Agile Routes ──────────────────────────────────────────────────────────────
+
+from agile.sprint_manager import SprintManager
+
+@app.post("/api/sprints")
+async def create_sprint(req: SprintCreate, db: AsyncSession = Depends(get_async_db)):
+    sm = SprintManager(db)
+    sprint = await sm.create_sprint(req.project_id, req.name, req.goal, req.duration_days)
+    return {"id": sprint.id, "name": sprint.name, "status": sprint.status}
+
+@app.get("/api/projects/{project_id}/sprints/active")
+async def get_active_sprint(project_id: str, db: AsyncSession = Depends(get_async_db)):
+    sm = SprintManager(db)
+    sprint = await sm.get_active_sprint(project_id)
+    if not sprint:
+        raise HTTPException(404, "No active sprint found")
+    return {"id": sprint.id, "name": sprint.name, "goal": sprint.goal}
+
+@app.get("/api/sprints")
+async def get_sprints():
+    """Get all sprints."""
+    from agile.sprint_manager import SprintManager
+    from config.database import AsyncSessionLocal
+    from sqlalchemy.future import select
+    from agile.models import Sprint
+    
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(Sprint).order_by(Sprint.start_date.desc()))
+        sprints = result.scalars().all()
+        return [{"id": s.id, "project_id": s.project_id, "status": s.status, "goal": s.goal} for s in sprints]
+
+@app.post("/api/sprints/{sprint_id}/stories")
+async def create_story(sprint_id: str, req: StoryCreate, db: AsyncSession = Depends(get_async_db)):
+    sm = SprintManager(db)
+    story = await sm.create_story(sprint_id, req.title, req.description, req.story_points, req.assigned_to)
+    return {"id": story.id, "title": story.title}
+
+@app.get("/api/sprints/{sprint_id}/stories")
+async def get_stories(sprint_id: str):
+    """Get all user stories for a sprint."""
+    from agile.sprint_manager import SprintManager
+    from config.database import AsyncSessionLocal
+    from sqlalchemy.future import select
+    from agile.models import UserStory
+    
+    async with AsyncSessionLocal() as session:
+        result = await session.execute(select(UserStory).where(UserStory.sprint_id == sprint_id))
+        stories = result.scalars().all()
+        return [{
+            "id": s.id, 
+            "title": s.title, 
+            "description": s.description, 
+            "status": s.status, 
+            "assigned_to": s.assigned_to, 
+            "points": s.points
+        } for s in stories]
+
+@app.post("/api/sprints/{sprint_id}/standup")
+async def submit_standup(sprint_id: str, req: StandupSubmit, db: AsyncSession = Depends(get_async_db)):
+    sm = SprintManager(db)
+    report = await sm.submit_standup(
+        sprint_id, req.agent_name, 
+        req.completed_yesterday, req.working_on_today, req.blockers, req.mood
+    )
+    return {"id": report.id, "status": "submitted"}
 
 
 @app.get("/api/pipelines/health")

@@ -17,16 +17,22 @@ from __future__ import annotations
 
 import json
 import time
+import asyncio
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-import anthropic
-
 from config.settings import settings
 from memory.store import ProjectMemory
 from tools.registry import TOOL_REGISTRY, get_tools_for_agent
+from llm.client import LLMClient
+from communication.bus import MessageBus, AgentMessage
+from config.database import AsyncSessionLocal, get_async_db
+from agile.models import AgentPersonaDB
+from agile.sprint_manager import SprintManager
+from memory.vector_store import VectorMemory
+from evolution.outcome_tracker import OutcomeTracker, TaskOutcome
 from agents.agent_config import (
     AgentConfig,
     AgentState,
@@ -47,37 +53,7 @@ logger = logging.getLogger(__name__)
 
 # ── Lazy client factory (replaces module-level global) ────────────────────────
 
-_clients: dict[str, anthropic.Anthropic] = {}
-
-
-def _get_client(api_key: str | None = None) -> anthropic.Anthropic:
-    """Get or create an Anthropic client. Lazy init, cached."""
-    key = api_key or settings.anthropic_api_key
-    if key not in _clients:
-        _clients[key] = anthropic.Anthropic(api_key=key)
-    return _clients[key]
-
-
-# ── Backward compatibility alias ──────────────────────────────────────────────
-# Existing tests mock `agents.base.client` — this keeps them working.
-
-class _LazyClient:
-    """Proxy that defers client creation until first use."""
-    _instance: anthropic.Anthropic | None = None
-
-    @property
-    def messages(self):
-        if self._instance is None:
-            self._instance = _get_client()
-        return self._instance.messages
-
-    def __getattr__(self, name):
-        if self._instance is None:
-            self._instance = _get_client()
-        return getattr(self._instance, name)
-
-
-client = _LazyClient()
+# Legacy client factory removed in favor of LLMClient
 
 
 @dataclass
@@ -160,7 +136,9 @@ class BaseAgent(ABC):
     ):
         self.project_id = project_id
         self.config = config or get_agent_config(self.name)
-        self._client = llm_client or _get_client()
+        self._llm = llm_client or LLMClient()
+        self.bus = MessageBus()
+        self.persona: Optional[AgentPersonaDB] = None
         self._state = AgentState.IDLE
         self._messages: list[dict] = []
 
@@ -176,21 +154,121 @@ class BaseAgent(ABC):
             self._messages = self.memory.restore_agent_messages(self.name)
             logger.info("[%s] Restored %d messages from memory", self.name, len(self._messages))
 
+        # Semantic memory for long-term self-evolution
+        self.vector_memory = VectorMemory(self.name)
+        self.outcome_tracker = OutcomeTracker(self.client)
+        self.recent_lessons = []
+
     @property
     @abstractmethod
     def system_prompt(self) -> str:
         """Return the system prompt for this agent."""
 
+    async def init_persona(self):
+        """Load persistent persona from DB."""
+        try:
+            async with AsyncSessionLocal() as db:
+                sm = SprintManager(db)
+                self.persona = await sm.get_or_create_persona(
+                    name=self.name,
+                    title=self.role,
+                    style=getattr(self, 'style', "Professional and engineering-focused")
+                )
+                logger.info("[%s] Persona loaded: %s (%s)", self.name, self.persona.title, self.persona.seniority)
+        except Exception as e:
+            logger.warning("[%s] Failed to load persona from DB, using defaults: %s", self.name, e)
+
+    @property
+    def effective_system_prompt(self) -> str:
+        """Enrich system prompt with persona and memory."""
+        prompt = self.system_prompt
+        
+        # Inject recent lessons from semantic memory
+        lessons_prefix = ""
+        if getattr(self, 'recent_lessons', []):
+            lessons_prefix = "## LESSONS FROM PAST EXPERIENCES\n" + "\n".join(f"- {l}" for l in self.recent_lessons) + "\n\n"
+            
+        if self.persona:
+            persona_prefix = textwrap.dedent(f"""
+                ## YOUR IDENTITY
+                You are {self.persona.name}, {self.persona.title}.
+                Your seniority level is {self.persona.seniority}.
+                Working style: {self.persona.style}
+                
+                ## YOUR MEMORY
+                Recent decisions you've made:
+                {self.persona.decision_log[-5:] if self.persona.decision_log else "None logged yet."}
+            """).strip()
+            return f"{persona_prefix}\n\n{lessons_prefix}{prompt}"
+        return f"{lessons_prefix}{prompt}"
+
     @property
     def state(self) -> AgentState:
         return self._state
 
-    def run(self, task: str, context: str = "", use_memory: bool = True) -> AgentResult:
+    # ── Communication Bus ─────────────────────────────────────────────────────
+
+    async def broadcast(self, content: str, channel: str = "general", metadata: dict = None):
+        """Broadcast a message to a channel."""
+        msg = AgentMessage(
+            sender=self.name,
+            content=content,
+            message_type="broadcast",
+            channel=channel,
+            metadata=metadata or {}
+        )
+        await self.bus.publish(msg)
+
+    async def ask(self, recipient: str, question: str, channel: str = "general") -> str:
+        """
+        Ask another agent a question and wait for an answer.
+        (Note: Full bidirectional sync ask/answer requires the background listener).
+        For now, this just publishes the question.
+        """
+        msg = AgentMessage(
+            sender=self.name,
+            recipient=recipient,
+            content=question,
+            message_type="ask",
+            channel=channel
+        )
+        await self.bus.publish(msg)
+        logger.info("[%s] Asked %s: %s", self.name, recipient, question[:50])
+        return msg.id
+
+    async def answer(self, recipient: str, reply_to: str, content: str):
+        """Answer a question from another agent."""
+        msg = AgentMessage(
+            sender=self.name,
+            recipient=recipient,
+            reply_to=reply_to,
+            content=content,
+            message_type="answer",
+            channel="general"
+        )
+        await self.bus.publish(msg)
+
+    # ── Execution ─────────────────────────────────────────────────────────────
+
+    async def run(self, task: str, context: str = "", use_memory: bool = True) -> AgentResult:
         """
         Execute the agent on a task.
         Runs a tool-use loop until Claude returns end_turn.
         Includes retry logic, cost tracking, and context window management.
         """
+        # Initialization
+        if not self.persona:
+            await self.init_persona()
+
+        # Self-Evolution: Recall similar tasks before starting
+        try:
+            similar_memories = await self.vector_memory.search(task, memory_type="lesson", top_k=3)
+            self.recent_lessons = [m.content for m in similar_memories if m.similarity > 0.7]
+            if self.recent_lessons:
+                logger.info("[%s] Recalled %d relevant lessons from past tasks.", self.name, len(self.recent_lessons))
+        except Exception as e:
+            logger.warning("[%s] Failed to recall memory: %s", self.name, e)
+
         self._state = AgentState.EXECUTING
         start = time.time()
         result = AgentResult(agent_name=self.name, model_used=self.config.model)
@@ -232,21 +310,21 @@ class BaseAgent(ABC):
                     result.errors.append(f"Cost cap ${self.config.max_cost_per_run} exceeded")
                     break
 
-                response = self._call_claude_with_retry(tools, result)
+                response = await self._call_llm_with_retry(tools, result)
 
-                result.input_tokens += response.usage.input_tokens
-                result.output_tokens += response.usage.output_tokens
-                self._messages.append({"role": "assistant", "content": response.content})
+                result.input_tokens += response.usage.prompt_tokens
+                result.output_tokens += response.usage.completion_tokens
+                
+                msg = response.choices[0].message
+                self._messages.append(msg.to_dict())
 
-                if response.stop_reason == "end_turn":
-                    result.output = next(
-                        (b.text for b in response.content if hasattr(b, "text")), ""
-                    )
+                if response.choices[0].finish_reason in ["stop", "end_turn"]:
+                    result.output = msg.content or ""
                     breaker.record_success()
                     break
 
-                if response.stop_reason == "tool_use":
-                    tool_results = self._execute_tools(response.content, result)
+                if response.choices[0].finish_reason == "tool_use" or msg.tool_calls:
+                    tool_results = await self._execute_tools(msg.tool_calls or [], result)
                     self._messages.append({"role": "user", "content": tool_results})
 
         except CircuitBreakerOpenError:
@@ -280,24 +358,40 @@ class BaseAgent(ABC):
         )
         return result
 
-    def _call_claude_with_retry(self, tools: list[dict], result: AgentResult):
-        """Call Claude API with retry logic."""
+    async def remember_outcome(self, outcome: TaskOutcome):
+        """Analyze the outcome and save the lesson to semantic memory."""
+        try:
+            lesson = await self.outcome_tracker.extract_lesson(outcome)
+            logger.info("[%s] Lesson learned: %s", self.name, lesson)
+            
+            await self.vector_memory.store(
+                content=lesson,
+                memory_type="lesson",
+                metadata={
+                    "task": outcome.task_summary,
+                    "review_passed": outcome.review_passed,
+                    "tests_passed": outcome.tests_passed,
+                }
+            )
+        except Exception as e:
+            logger.error("[%s] Failed to remember outcome: %s", self.name, e)
+
+    async def _call_llm_with_retry(self, tools: list[dict], result: AgentResult):
+        """Call LLM API via LiteLLM with retry logic."""
         last_exception = None
 
         for attempt in range(self.config.max_retries + 1):
             try:
-                kwargs: dict[str, Any] = dict(
+                return await self._llm.create_message(
                     model=self.config.model,
                     max_tokens=self.config.max_tokens,
-                    system=self.system_prompt,
+                    system=self.effective_system_prompt,
                     messages=self._messages,
+                    tools=tools,
                 )
-                if tools:
-                    kwargs["tools"] = tools
 
-                return self._client.messages.create(**kwargs)
-
-            except RETRYABLE_EXCEPTIONS as e:
+            except Exception as e:
+                # Check if it's a retryable exception (LiteLLM wraps these)
                 last_exception = e
                 if attempt >= self.config.max_retries:
                     break
@@ -312,35 +406,43 @@ class BaseAgent(ABC):
                     "[%s] Retry %d/%d after %s — waiting %.1fs",
                     self.name, attempt + 1, self.config.max_retries, e, wait,
                 )
-                time.sleep(wait)
+                await asyncio.sleep(wait)
 
         raise last_exception  # type: ignore[misc]
 
-    def _execute_tools(self, content_blocks: list, result: AgentResult) -> list[dict]:
+    async def _execute_tools(self, tool_calls: list, result: AgentResult) -> list[dict]:
         tool_results = []
-        for block in content_blocks:
-            if not hasattr(block, "type") or block.type != "tool_use":
-                continue
+        for block in tool_calls:
+            # Handle both object-style and dict-style tool calls
+            tool_name = getattr(block.function, "name", None) or block.function["name"]
+            tool_input_raw = getattr(block.function, "arguments", None) or block.function["arguments"]
+            tool_id = getattr(block, "id", None) or block["id"]
+            
+            if isinstance(tool_input_raw, str):
+                tool_input = json.loads(tool_input_raw)
+            else:
+                tool_input = tool_input_raw
 
-            fn = TOOL_REGISTRY.get(block.name)
-            call_record = {"tool": block.name, "input": block.input}
+            fn = TOOL_REGISTRY.get(tool_name)
+            call_record = {"tool": tool_name, "input": tool_input}
 
             if not fn:
-                output = {"error": f"Unknown tool: {block.name}"}
+                output = {"error": f"Unknown tool: {tool_name}"}
             else:
                 try:
-                    output = fn(**block.input)
+                    # Execute tool (synchronously for now as they are synchronous)
+                    output = fn(**tool_input)
                     call_record["output"] = output
-                    logger.info("  [tool] %s → %s", block.name, str(output)[:120])
+                    logger.info("  [tool] %s → %s", tool_name, str(output)[:120])
                 except Exception as e:
                     output = {"error": str(e)}
                     call_record["error"] = str(e)
-                    logger.warning("  [tool] %s failed: %s", block.name, e)
+                    logger.warning("  [tool] %s failed: %s", tool_name, e)
 
             result.tool_calls.append(call_record)
             tool_results.append({
                 "type": "tool_result",
-                "tool_use_id": block.id,
+                "tool_use_id": tool_id,
                 "content": json.dumps(output),
             })
 

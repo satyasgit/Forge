@@ -139,7 +139,7 @@ class QAAgent(BaseAgent):
             Produce complete, runnable code — not pseudocode.
         """).strip()
 
-    def generate_tests(
+    async def generate_tests(
         self,
         source_code: dict[str, str],
         existing_tests: dict[str, str] | None = None,
@@ -185,7 +185,7 @@ class QAAgent(BaseAgent):
 
         return self.run(task)
 
-    def generate_conftest(self, models: list[str], context: str = "") -> AgentResult:
+    async def generate_conftest(self, models: list[str], context: str = "") -> AgentResult:
         """Generate a project-specific conftest.py from model names."""
         task = textwrap.dedent(f"""
             Generate a complete conftest.py for a FastAPI project with these models:
@@ -200,7 +200,7 @@ class QAAgent(BaseAgent):
         """)
         return self.run(task)
 
-    def generate_e2e_tests(self, user_journeys: list[str], base_url: str = "http://localhost:3000") -> AgentResult:
+    async def generate_e2e_tests(self, user_journeys: list[str], base_url: str = "http://localhost:3000") -> AgentResult:
         """Generate Playwright E2E tests for critical user journeys."""
         journeys_text = "\n".join(f"- {j}" for j in user_journeys)
         task = textwrap.dedent(f"""
@@ -213,7 +213,7 @@ class QAAgent(BaseAgent):
         """)
         return self.run(task)
 
-    def audit_test_quality(self, test_files: dict[str, str]) -> AgentResult:
+    async def audit_test_quality(self, test_files: dict[str, str]) -> AgentResult:
         """Review existing tests and produce a prioritised fix plan."""
         antipatterns = self._scan_existing_tests(test_files)
         tests_block = "\n\n".join(
@@ -292,24 +292,27 @@ class QAAgent(BaseAgent):
         return "\n".join(lines)
 
 
-if __name__ == "__main__":
-    SAMPLE_SOURCE = {
-        "api/routes/users.py": '''
-from fastapi import APIRouter, Depends, HTTPException, status
-from core.auth import get_current_user
+    import asyncio
+    async def main():
+        SAMPLE_SOURCE = {
+            "api/routes/users.py": '''
+    from fastapi import APIRouter, Depends, HTTPException, status
+    from core.auth import get_current_user
 
-router = APIRouter(prefix="/users")
+    router = APIRouter(prefix="/users")
 
-@router.get("/{user_id}")
-def get_user(user_id: str, _=Depends(get_current_user)):
-    raise HTTPException(404, "User not found")
+    @router.get("/{user_id}")
+    def get_user(user_id: str, _=Depends(get_current_user)):
+        raise HTTPException(404, "User not found")
 
-@router.post("/", status_code=201)
-def create_user(data: dict):
-    pass
-''',
-    }
-    agent = QAAgent(project_id="demo")
-    result = agent.generate_tests(SAMPLE_SOURCE, framework="fastapi", context="SaaS API")
-    print(result.output)
-    print(f"\n--- Cost: ${result.cost_usd:.4f} | {result.duration_seconds:.1f}s ---")
+    @router.post("/", status_code=201)
+    def create_user(data: dict):
+        pass
+    ''',
+        }
+        agent = QAAgent(project_id="demo")
+        result = await agent.generate_tests(SAMPLE_SOURCE, framework="fastapi", context="SaaS API")
+        print(result.output)
+        print(f"\n--- Cost: ${result.cost_usd:.4f} | {result.duration_seconds:.1f}s ---")
+
+    asyncio.run(main())

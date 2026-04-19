@@ -228,11 +228,12 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
   previewResult: null,
   validate: async () => {
     const { customConfig } = get();
+    set({ isLoading: true, error: null });
     try {
       const result = await api.validateConfig(customConfig);
-      set({ validationResult: result, error: null });
+      set({ validationResult: result, isLoading: false });
     } catch (err: any) {
-      set({ error: err.message || 'Validation failed' });
+      set({ error: err.message || 'Validation failed', isLoading: false });
     }
   },
   preview: async () => {

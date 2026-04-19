@@ -135,7 +135,7 @@ class PMAgent(BaseAgent):
     # Public API
     # ──────────────────────────────────────────────────────────────────────────
 
-    def write_prd(
+    async def write_prd(
         self,
         feature: str,
         target_users: str = "",
@@ -311,17 +311,21 @@ class PMAgent(BaseAgent):
 
 
 if __name__ == "__main__":
-    agent = PMAgent(project_id="demo")
-    result = agent.write_prd(
-        feature="""
-        Stripe subscription billing with three tiers (Free, Pro $29/mo, Business $99/mo).
-        Team seats on Business plan. Stripe customer portal for self-service.
-        Webhook handling for payment failures and cancellations.
-        Mobile IAP via RevenueCat for iOS/Android.
-        GDPR-compliant data deletion on cancellation.
-        """,
-        target_users="Solo founders and small SaaS teams (1-10 people)",
-        context="B2B SaaS web + mobile app, no billing currently, ~500 beta users",
-    )
-    print(result.output)
-    print(f"\n--- Cost: ${result.cost_usd:.4f} | {result.duration_seconds:.1f}s ---")
+    import asyncio
+    async def main():
+        agent = PMAgent(project_id="demo")
+        result = await agent.write_prd(
+            feature="""
+            Stripe subscription billing with three tiers (Free, Pro $29/mo, Business $99/mo).
+            Team seats on Business plan. Stripe customer portal for self-service.
+            Webhook handling for payment failures and cancellations.
+            Mobile IAP via RevenueCat for iOS/Android.
+            GDPR-compliant data deletion on cancellation.
+            """,
+            target_users="Solo founders and small SaaS teams (1-10 people)",
+            context="B2B SaaS web + mobile app, no billing currently, ~500 beta users",
+        )
+        print(result.output)
+        print(f"\n--- Cost: ${result.cost_usd:.4f} | {result.duration_seconds:.1f}s ---")
+
+    asyncio.run(main())

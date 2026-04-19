@@ -39,7 +39,13 @@
       "Bash(curl -s \"http://localhost:8000/api/projects/demo/pipelines/history?limit=5\")",
       "Bash(curl -s \"http://localhost:8000/api/projects/demo/pipelines/history?limit=10\")",
       "Bash(ls -lh data/*.db)",
-      "Bash(git commit -m 'fix: resolve runtime issues for Phase 4 deployment:*)"
+      "Bash(git commit -m 'fix: resolve runtime issues for Phase 4 deployment:*)",
+      "Bash(npm run:*)",
+      "Read(//private/tmp/**)",
+      "Bash(curl -s http://localhost:5173)",
+      "Bash(curl -s http://localhost:3000)",
+      "Bash(curl -X POST http://localhost:8000/api/pipelines/run -H \"Content-Type: application/json\" -d '{\"project_id\": \"test-project\", \"config\": {\"name\": \"test\", \"agents\": [{\"name\": \"pm_agent\", \"type\": \"pm_agent\", \"task_prompt\": \"Say hello\"}]}}')",
+      "Bash(curl:*)"
     ]
   },
   "enabledPlugins": {

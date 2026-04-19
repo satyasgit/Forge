@@ -14,8 +14,6 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
-import anthropic
-
 from agents.base import AgentResult
 from config.settings import settings
 from memory.store import ProjectMemory
@@ -31,8 +29,6 @@ if TYPE_CHECKING:
     from agents.base import BaseAgent
 
 logger = logging.getLogger(__name__)
-
-aclient = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
 
 
 @dataclass
@@ -195,11 +191,7 @@ class Orchestrator:
                 context = "\n\n".join(ctx_parts)
 
                 logger.info(f"[orchestrator] Running: {task.name}")
-                loop = asyncio.get_event_loop()
-                result = await loop.run_in_executor(
-                    None,
-                    lambda t=task, c=context: t.agent.run(t.task, context=c)
-                )
+                result = await task.agent.run(task.task, context=context)
                 return task.name, result
 
             # Execute all ready tasks in parallel
@@ -595,6 +587,35 @@ async def run_full_pipeline(
         dag = PipelineDAG(tasks=tasks, edges=[])
 
     return await orch.run(dag)
+
+# ── Temporal Orchestration (Phase 4) ──────────────────────────────────────────
+
+async def run_sprint_with_temporal(sprint_id: str, project_id: str, backlog: list[dict], duration_days: int = 14) -> str:
+    """
+    Start a Sprint Workflow on Temporal.
+    Returns the workflow ID.
+    """
+    from temporalio.client import Client
+    
+    # Connect to Temporal
+    logger.info("Connecting to Temporal server to start sprint workflow...")
+    try:
+        client = await Client.connect("localhost:7233")
+    except Exception as e:
+        logger.error(f"Failed to connect to Temporal: {e}")
+        raise RuntimeError(f"Temporal server not running. Start it with 'temporal server start-dev'. Error: {e}")
+
+    # Start the workflow
+    workflow_id = f"sprint-{sprint_id}-{uuid.uuid4().hex[:8]}"
+    handle = await client.start_workflow(
+        "SprintWorkflow",
+        args=[sprint_id, project_id, backlog, duration_days],
+        id=workflow_id,
+        task_queue="agent-tasks",
+    )
+    
+    logger.info(f"Started SprintWorkflow with ID: {handle.id}")
+    return handle.id
 
 
 if __name__ == "__main__":

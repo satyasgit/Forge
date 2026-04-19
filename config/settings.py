@@ -62,6 +62,11 @@ class Settings(BaseSettings):
     slack_bot_token: str = ""
     slack_channel: str = "#dev-agents"
 
+    # ── Infrastructure (v2) ───────────────────────────────────────────────────
+    redis_url: str = "redis://localhost:6379"
+    litellm_proxy_url: str = "http://localhost:4000"
+    litellm_master_key: str = ""
+
     # ── API server ────────────────────────────────────────────────────────────
     api_host: str = "0.0.0.0"
     api_port: int = 8000

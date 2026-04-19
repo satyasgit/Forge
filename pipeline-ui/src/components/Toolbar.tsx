@@ -3,7 +3,7 @@ import { useState } from 'react';
 interface ToolbarProps {
   onValidate: () => void;
   onPreview: () => void;
-  onRun: () => void;
+  onRun: (projectId: string) => void;
   isValid: boolean;
   isLoading: boolean;
 }
@@ -32,7 +32,7 @@ export default function Toolbar({
       return;
     }
     setShowRunModal(false);
-    onRun();
+    onRun(projectId);
   };
 
   return (
@@ -40,7 +40,7 @@ export default function Toolbar({
       <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
         <button
           className="btn btn-secondary"
-          onClick={onValidate}
+          onClick={() => onValidate()}
           disabled={isLoading}
         >
           {isLoading ? (
@@ -55,7 +55,7 @@ export default function Toolbar({
 
         <button
           className="btn btn-secondary"
-          onClick={onPreview}
+          onClick={() => onPreview()}
           disabled={isLoading}
         >
           {isLoading ? (

@@ -157,7 +157,7 @@ class FrontendAgent(BaseAgent):
     # Public API
     # ──────────────────────────────────────────────────────────────────────────
 
-    def build_components(
+    async def build_components(
         self,
         design_spec: str,
         api_routes: dict[str, str] | None = None,
@@ -209,7 +209,7 @@ class FrontendAgent(BaseAgent):
 
         return self.run(task)
 
-    def audit_components(self, components: dict[str, str]) -> AgentResult:
+    async def audit_components(self, components: dict[str, str]) -> AgentResult:
         """Review existing components for test gaps and a11y issues."""
         gaps = self._scan_components(components)
         a11y = self._scan_a11y(components)
@@ -235,7 +235,7 @@ class FrontendAgent(BaseAgent):
         """)
         return self.run(task)
 
-    def write_tests_for_component(
+    async def write_tests_for_component(
         self,
         component_name: str,
         component_code: str,
@@ -342,40 +342,43 @@ class FrontendAgent(BaseAgent):
         return "\n".join(lines)
 
 
-if __name__ == "__main__":
-    SAMPLE_COMPONENT = {
-        "UserProfile.tsx": '''
-import { useState } from "react";
+    import asyncio
+    async def main():
+        SAMPLE_COMPONENT = {
+            "UserProfile.tsx": '''
+    import { useState } from "react";
 
-export function UserProfile({ userId }) {
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+    export function UserProfile({ userId }) {
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState(null);
 
-  const handleSave = () => {
-    setLoading(true);
-    // save logic
-  };
+      const handleSave = () => {
+        setLoading(true);
+        // save logic
+      };
 
-  if (loading) return <div>Loading...</div>;
-  if (error) return <div>{error}</div>;
+      if (loading) return <div>Loading...</div>;
+      if (error) return <div>{error}</div>;
 
-  return (
-    <div>
-      <img src="/avatar.jpg" />
-      <input placeholder="Name" />
-      <button onClick={handleSave}>Save</button>
-    </div>
-  );
-}
-''',
+      return (
+        <div>
+          <img src="/avatar.jpg" />
+          <input placeholder="Name" />
+          <button onClick={handleSave}>Save</button>
+        </div>
+      );
     }
+    ''',
+        }
 
-    agent = FrontendAgent(project_id="demo")
-    result = agent.build_components(
-        design_spec="User profile page with avatar, name field, and save button",
-        existing_components=SAMPLE_COMPONENT,
-        api_routes={"PATCH /api/users/:id": "Update user name and avatar"},
-        context="React 18 SaaS dashboard",
-    )
-    print(result.output)
-    print(f"\n--- Cost: ${result.cost_usd:.4f} | {result.duration_seconds:.1f}s ---")
+        agent = FrontendAgent(project_id="demo")
+        result = await agent.build_components(
+            design_spec="User profile page with avatar, name field, and save button",
+            existing_components=SAMPLE_COMPONENT,
+            api_routes={"PATCH /api/users/:id": "Update user name and avatar"},
+            context="React 18 SaaS dashboard",
+        )
+        print(result.output)
+        print(f"\n--- Cost: ${result.cost_usd:.4f} | {result.duration_seconds:.1f}s ---")
+
+    asyncio.run(main())

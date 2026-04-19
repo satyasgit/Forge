@@ -21,10 +21,14 @@ from typing import Any
 
 MODEL_PRICING: dict[str, tuple[float, float]] = {
     # (input_cost_per_1M, output_cost_per_1M)
+    "claude-3-5-sonnet":          (3.00, 15.00),
+    "claude-3-5-haiku":           (0.80, 4.00),
+    "gpt-4o":                     (5.00, 15.00),
+    "gemini-1.5-flash":           (0.075, 0.30),
+    # Legacy aliases (for backward compatibility during migration)
     "claude-opus-4-5":            (15.00, 75.00),
     "claude-sonnet-4-5":          (3.00, 15.00),
     "claude-haiku-4-5-20251001":  (0.80, 4.00),
-    # Add new models here as they become available
 }
 
 
@@ -83,27 +87,27 @@ class AgentConfig:
 # ── Default Configs Per Agent Role ────────────────────────────────────────────
 
 AGENT_CONFIGS: dict[str, AgentConfig] = {
-    # Planning agents → Opus (needs deep reasoning)
-    "pm":           AgentConfig(model="claude-opus-4-5", max_tokens=8192),
-    "architect":    AgentConfig(model="claude-opus-4-5", max_tokens=8192),
+    # Planning agents → Sonnet (currently highest reliable for code/plans)
+    "pm":           AgentConfig(model="claude-3-5-sonnet", max_tokens=8192),
+    "architect":    AgentConfig(model="claude-3-5-sonnet", max_tokens=8192),
 
-    # Security → Opus (safety-critical)
-    "security":     AgentConfig(model="claude-opus-4-5", max_tokens=8192),
+    # Security → Sonnet
+    "security":     AgentConfig(model="claude-3-5-sonnet", max_tokens=8192),
 
-    # Code generation → Sonnet (strong at code, 5x cheaper)
-    "frontend":     AgentConfig(model="claude-sonnet-4-5", max_tokens=8192),
-    "backend":      AgentConfig(model="claude-sonnet-4-5", max_tokens=8192),
-    "mobile":       AgentConfig(model="claude-sonnet-4-5", max_tokens=8192),
-    "code_review":  AgentConfig(model="claude-sonnet-4-5", max_tokens=4096),
+    # Code generation → Sonnet
+    "frontend":     AgentConfig(model="claude-3-5-sonnet", max_tokens=8192),
+    "backend":      AgentConfig(model="claude-3-5-sonnet", max_tokens=8192),
+    "mobile":       AgentConfig(model="claude-3-5-sonnet", max_tokens=8192),
+    "code_review":  AgentConfig(model="claude-3-5-sonnet", max_tokens=4096),
 
     # Template-heavy → Sonnet
-    "qa":           AgentConfig(model="claude-sonnet-4-5", max_tokens=8192),
-    "devops":       AgentConfig(model="claude-sonnet-4-5", max_tokens=4096),
-    "monetisation": AgentConfig(model="claude-sonnet-4-5", max_tokens=4096),
-    "ui_ux":        AgentConfig(model="claude-sonnet-4-5", max_tokens=4096),
+    "qa":           AgentConfig(model="claude-3-5-sonnet", max_tokens=8192),
+    "devops":       AgentConfig(model="claude-3-5-sonnet", max_tokens=4096),
+    "monetisation": AgentConfig(model="claude-3-5-sonnet", max_tokens=4096),
+    "ui_ux":        AgentConfig(model="claude-3-5-sonnet", max_tokens=4096),
 
     # Verification → Sonnet
-    "verification": AgentConfig(model="claude-sonnet-4-5", max_tokens=4096),
+    "verification": AgentConfig(model="claude-3-5-sonnet", max_tokens=4096),
 }
 
 

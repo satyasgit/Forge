@@ -23,8 +23,11 @@ from config.settings import settings
 
 logger = logging.getLogger(__name__)
 
-# Detect if we're using PostgreSQL or SQLite
-is_postgres = settings.database_url.startswith("postgresql") if settings.database_url else False
+# Detect if we're using PostgreSQL or SQLite (handles postgres:// and postgresql://)
+is_postgres = (
+    settings.database_url.startswith("postgresql") or 
+    settings.database_url.startswith("postgres")
+) if settings.database_url else False
 
 # ── Sync Engine (for migrations, scripts) ─────────────────────────────────────
 
@@ -56,9 +59,15 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 # ── Async Engine & Session (for FastAPI) ─────────────────────────────────────
 
 if is_postgres:
-    # Use asyncpg for PostgreSQL
+    # Use asyncpg for PostgreSQL - Normalize prefix
+    url = settings.database_url
+    if url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql+asyncpg://", 1)
+    elif url.startswith("postgresql://"):
+        url = url.replace("postgresql://", "postgresql+asyncpg://", 1)
+        
     async_engine = create_async_engine(
-        settings.database_url.replace("postgresql://", "postgresql+asyncpg://"),
+        url,
         echo=False,
         pool_size=20,
         max_overflow=30,

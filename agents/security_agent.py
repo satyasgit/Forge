@@ -144,7 +144,7 @@ class SecurityAgent(BaseAgent):
     # Public API
     # ──────────────────────────────────────────────────────────────────────────
 
-    def run_full_audit(
+    async def run_full_audit(
         self,
         code: dict[str, str],         # {filename: content}
         language: str = "python",
@@ -191,21 +191,21 @@ class SecurityAgent(BaseAgent):
             For every finding, provide a working code fix — not pseudocode.
         """).strip()
 
-        return self.run(task)
+        return await self.run(task)
 
-    def audit_file(self, filename: str, content: str, language: str = "python") -> AgentResult:
+    async def audit_file(self, filename: str, content: str, language: str = "python") -> AgentResult:
         """Audit a single file."""
-        return self.run_full_audit({filename: content}, language)
+        return await self.run_full_audit({filename: content}, language)
 
-    def audit_github_repo(self, repo: str, files: list[str]) -> AgentResult:
+    async def audit_github_repo(self, repo: str, files: list[str]) -> AgentResult:
         """Fetch files from GitHub and audit them."""
         code = {}
         for path in files:
-            result = self.run(f"Fetch file {path} from repo {repo}")
+            result = await self.run(f"Fetch file {path} from repo {repo}")
             code[path] = result.output
-        return self.run_full_audit(code, context=f"GitHub repo: {repo}")
+        return await self.run_full_audit(code, context=f"GitHub repo: {repo}")
 
-    def generate_threat_model(self, architecture_description: str) -> AgentResult:
+    async def generate_threat_model(self, architecture_description: str) -> AgentResult:
         """Generate a STRIDE threat model for an architecture."""
         task = textwrap.dedent(f"""
             Generate a comprehensive STRIDE threat model for this architecture:
@@ -220,7 +220,7 @@ class SecurityAgent(BaseAgent):
 
             Then produce a Data Flow Diagram description and trust boundary analysis.
         """)
-        return self.run(task)
+        return await self.run(task)
 
     # ──────────────────────────────────────────────────────────────────────────
     # Internal SAST scanner (runs locally, no API cost)
@@ -300,6 +300,7 @@ class SecurityAgent(BaseAgent):
 # ─── Run standalone ──────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
+    import asyncio
     # Example: audit a vulnerable FastAPI snippet
     SAMPLE_CODE = {
         "auth.py": '''
@@ -340,12 +341,15 @@ def search(q: str):
 ''',
     }
 
-    agent = SecurityAgent(project_id="demo-project")
-    result = agent.run_full_audit(
-        code=SAMPLE_CODE,
-        language="python",
-        context="FastAPI web app with user authentication and file serving",
-        requirements_txt="fastapi==0.100.0\npyjwt==1.7.1\nsqlite3",
-    )
-    print(result.output)
-    print(f"\n--- Cost: ${result.cost_usd:.4f} | Time: {result.duration_seconds:.1f}s ---")
+    async def main():
+        agent = SecurityAgent(project_id="demo-project")
+        result = await agent.run_full_audit(
+            code=SAMPLE_CODE,
+            language="python",
+            context="FastAPI web app with user authentication and file serving",
+            requirements_txt="fastapi==0.100.0\npyjwt==1.7.1\nsqlite3",
+        )
+        print(result.output)
+        print(f"\n--- Cost: ${result.cost_usd:.4f} | Time: {result.duration_seconds:.1f}s ---")
+
+    asyncio.run(main())
