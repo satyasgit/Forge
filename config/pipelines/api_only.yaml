@@ -6,8 +6,8 @@ name: "api_only"
 description: "Backend API with security and tests (no UI)"
 project_types: ["api", "saas", "backend", "microservice"]
 
-auto_resolve: true
-strict_validation: false
+auto_resolve: false
+strict_validation: true
 
 estimated_cost_usd: 2.10
 estimated_duration_minutes: 10
@@ -42,6 +42,18 @@ agents:
     enabled: true
     model: "claude-sonnet-4-5"
     task: "Dockerize with multi-stage build, configure GitHub Actions CI/CD with security scanning, add health checks"
+
+edges:
+  - source: pm
+    target: backend
+  - source: backend
+    target: security
+  - source: security
+    target: code_review
+  - source: code_review
+    target: qa
+  - source: qa
+    target: devops
 
 settings:
   max_cost_usd: 5.0

@@ -6,11 +6,11 @@ name: "mvp"
 description: "Minimum Viable Product - core features only, skip polish"
 project_types: ["web", "mobile", "saas", "startup", "prototype"]
 
-auto_resolve: true
-strict_validation: false
+auto_resolve: false
+strict_validation: true
 
 estimated_cost_usd: 1.20
-estimated_duration_minutes: 6
+estimated_duration_minutes: 8
 
 agents:
   - agent: pm
@@ -19,7 +19,7 @@ agents:
     task: "Create lean PRD focusing on core MVP features only for: {feature}"
 
   - agent: ui_ux
-    enabled: false  # Skip UI/UX to save time/cost; frontend uses basic UI
+    enabled: false
     model: "claude-sonnet-4-5"
 
   - agent: frontend
@@ -33,7 +33,7 @@ agents:
     task: "Build minimal FastAPI backend with essential endpoints and basic authentication. Focus on functionality over perfection"
 
   - agent: code_review
-    enabled: false  # Skip to save time, accept risk
+    enabled: false
     model: "claude-sonnet-4-5"
 
   - agent: qa
@@ -42,13 +42,23 @@ agents:
     task: "Write critical path tests only - happy path and main error scenarios. Skip edge cases for MVP"
 
   - agent: devops
-    enabled: false  # Manual deployment for MVP
+    enabled: false
     model: "claude-sonnet-4-5"
 
   - agent: monetisation
-    enabled: false  # Add later for production
+    enabled: false
     model: "claude-sonnet-4-5"
 
+edges:
+  - source: pm
+    target: frontend
+  - source: pm
+    target: backend
+  - source: frontend
+    target: qa
+  - source: backend
+    target: qa
+
 settings:
-  max_cost_usd: 2.0
-  timeout_minutes: 30
+  max_cost_usd: 3.0
+  timeout_minutes: 45

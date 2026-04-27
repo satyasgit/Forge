@@ -6,11 +6,11 @@ name: "full_stack_web"
 description: "Complete web application with all specialist agents"
 project_types: ["web", "saas"]
 
-auto_resolve: true
-strict_validation: false
+auto_resolve: false # Use explicit edges for better control
+strict_validation: true
 
 estimated_cost_usd: 3.50
-estimated_duration_minutes: 12
+estimated_duration_minutes: 15
 
 agents:
   - agent: pm
@@ -58,6 +58,26 @@ agents:
     enabled: true
     model: "claude-sonnet-4-5"
     task: "Design monetisation strategy with Stripe integration, billing models, and entitlement middleware"
+
+edges:
+  - source: pm
+    target: ui_ux
+  - source: ui_ux
+    target: frontend
+  - source: ui_ux
+    target: backend
+  - source: frontend
+    target: security
+  - source: backend
+    target: security
+  - source: security
+    target: code_review
+  - source: code_review
+    target: qa
+  - source: qa
+    target: devops
+  - source: pm
+    target: monetisation
 
 settings:
   max_cost_usd: 10.0

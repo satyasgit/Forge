@@ -1,6 +1,5 @@
 import { useState } from 'react';
 import { usePipelineStore } from '../hooks/usePipelineStore';
-import type { CheckpointInfo } from '../types';
 
 interface CheckpointPanelProps {
   onClose: () => void;

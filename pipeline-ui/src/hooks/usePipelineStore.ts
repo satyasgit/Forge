@@ -8,7 +8,6 @@ import type {
   PipelinePreviewResponse,
   CheckpointListResponse,
   CheckpointDecisionRequest,
-  ResumeResponse,
 } from '../types';
 import * as api from '../api';
 
@@ -59,7 +58,10 @@ interface PipelineStore {
   setRunId: (runId: string | null) => void;
   setIsPaused: (paused: boolean) => void;
   setCheckpoints: (checkpoints: CheckpointListResponse['checkpoints']) => void;
-  pollCheckpoints: () => Promise<void>;  // Poll for pending checkpoints
+  pollCheckpoints: (runId: string) => Promise<void>;  // Poll for pending checkpoints
+  startCheckpointPolling: (runId: string) => void;
+  stopCheckpointPolling: () => void;
+  pollingInterval: number | undefined;
   approveCheckpoint: (checkpointId: string, approver?: string, reason?: string) => Promise<void>;
   rejectCheckpoint: (checkpointId: string, approver?: string, reason?: string) => Promise<void>;
 
@@ -282,7 +284,7 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
       set({ isLoading: false });
       // API returns {"run": {"job_id": "...", "status": "pending"}, "run_id": "...", "message": "...", "success": true}
       const jobId = result.run?.job_id ?? null;
-      const runId = result.run?.run_id ?? null;
+      const runId = (result as any).run_id ?? null;
       if (runId) {
         set({ runId });
         // Start polling for checkpoints
@@ -296,21 +298,21 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
   },
 
   // Checkpoint polling (runs in background)
-  pollingInterval: null as ReturnType<typeof setInterval> | null,
+  pollingInterval: undefined,
   startCheckpointPolling: (runId: string) => {
-    if (get().pollingInterval) {
+    if (get().pollingInterval !== undefined) {
       clearInterval(get().pollingInterval);
     }
     // Poll every 3 seconds
-    const interval = setInterval(async () => {
+    const interval = window.setInterval(async () => {
       await get().pollCheckpoints(runId);
     }, 3000);
     set({ pollingInterval: interval });
   },
   stopCheckpointPolling: () => {
-    if (get().pollingInterval) {
+    if (get().pollingInterval !== undefined) {
       clearInterval(get().pollingInterval);
-      set({ pollingInterval: null });
+      set({ pollingInterval: undefined });
     }
   },
 
@@ -333,13 +335,13 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
               ...node,
               data: {
                 ...node.data,
-                checkpointStatus: 'pending',
+                checkpointStatus: 'pending' as const,
               },
             };
           }
           return node;
         });
-        set({ nodes });
+        set({ nodes: nodes as PipelineNode[] });
       }
 
       // Check if all checkpoints are resolved (approved/rejected)
@@ -361,7 +363,7 @@ export const usePipelineStore = create<PipelineStore>((set, get) => ({
           }
           return node;
         });
-        set({ nodes, isPaused: false });
+        set({ nodes: nodes as PipelineNode[], isPaused: false });
       }
     } catch (err: any) {
       console.error('Failed to poll checkpoints:', err);
