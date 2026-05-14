@@ -10,7 +10,13 @@ from temporalio.worker import Worker
 
 # Import workflows and activities
 from workflows.sprint_workflow import SprintWorkflow, StoryWorkflow
-from activities.agent_activities import run_agent_activity, plan_sprint, run_standup
+from activities.agent_activities import (
+    run_agent_activity,
+    review_agent_output,
+    record_evolution_outcome,
+    plan_sprint,
+    run_standup,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -27,7 +33,7 @@ async def main():
         client,
         task_queue="agent-tasks",
         workflows=[SprintWorkflow, StoryWorkflow],
-        activities=[run_agent_activity, plan_sprint, run_standup],
+        activities=[run_agent_activity, review_agent_output, record_evolution_outcome, plan_sprint, run_standup],
     )
 
     logger.info("Starting Temporal worker. Press Ctrl+C to exit.")

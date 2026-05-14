@@ -33,26 +33,17 @@ async def run_agent_activity(
     agent = create_agent(agent_name, project_id=project_id)
     bus = MessageBus()
 
-    # 2. Retrieve semantic memories (Simulated for now, as VectorMemory is not fully implemented in base yet)
-    # similar = await agent.recall_similar(task)
-    similar = ""
-
-    # 3. Check inbox for relevant messages (Mocked for now, pending full MessageBus implementation for inbox)
-    # inbox = await bus.get_inbox(agent_name)
-    # message_context = "\n".join([f"[{m.sender}] {m.content}" for m in inbox if m.sprint_id == sprint_id])
+    # 2. Build enriched context from team messages (if available)
     message_context = ""
-
-    # 4. Build enriched context
     full_context = "\n\n".join(filter(None, [
         context,
-        f"## Relevant past experience:\n{similar}" if similar else None,
         f"## Team messages:\n{message_context}" if message_context else None,
     ]))
 
-    # 5. Execute
+    # 3. Execute (BaseAgent.run handles memory recall internally)
     result = await agent.run(task, context=full_context)
 
-    # 6. Post status update
+    # 4. Post status update
     status_msg = AgentMessage(
         sender=agent_name,
         channel=f"sprint-{sprint_id}" if sprint_id else "general",
@@ -62,21 +53,125 @@ async def run_agent_activity(
     )
     await bus.publish(status_msg)
 
-    # 7. Self-Evolution: Track outcome and remember lesson
-    from evolution.outcome_tracker import TaskOutcome
-    
-    # In a full flow, review_passed would be populated by the QA agent's step.
-    # For now, we assume success if no exceptions were thrown.
-    outcome = TaskOutcome(
-        agent_name=agent_name,
-        task_summary=task,
-        output_summary=result.output[:500],
-        review_passed=True,
-        tests_passed=True
-    )
-    await agent.remember_outcome(outcome)
+    # NOTE: Outcome recording is NOT done here anymore.
+    # It is done in the StoryWorkflow AFTER the review phase,
+    # so that real feedback signals (review_passed, tests_passed)
+    # can be wired into the TaskOutcome.
 
     return result.to_dict()
+
+
+@activity.defn
+async def review_agent_output(
+    reviewer_agent: str,
+    original_agent: str,
+    original_task: str,
+    output_to_review: str,
+    project_id: str = "default",
+    sprint_id: str | None = None,
+    story_id: str | None = None,
+) -> dict:
+    """
+    Run a review agent (code_review, qa, security) on another agent's output.
+    Returns structured feedback including pass/fail verdict.
+    """
+    from agents.agent_config import create_agent
+    from communication.bus import MessageBus, AgentMessage
+
+    logger.info(f"Starting review: {reviewer_agent} reviewing {original_agent}'s output")
+
+    agent = create_agent(reviewer_agent, project_id=project_id)
+    bus = MessageBus()
+
+    review_task = (
+        f"## Review Request\n"
+        f"You are reviewing the output of the **{original_agent}** agent.\n\n"
+        f"### Original Task\n{original_task}\n\n"
+        f"### Output to Review\n{output_to_review[:8000]}\n\n"
+        f"### Instructions\n"
+        f"1. Evaluate the output against the original task requirements.\n"
+        f"2. Check for correctness, security, error handling, and best practices.\n"
+        f"3. At the END of your review, you MUST include a verdict line:\n"
+        f"   `VERDICT: PASS` or `VERDICT: FAIL`\n"
+        f"4. If FAIL, list the specific issues that must be fixed.\n"
+    )
+
+    result = await agent.run(review_task)
+
+    # Parse verdict from output
+    output_upper = result.output.upper()
+    review_passed = "VERDICT: PASS" in output_upper
+    
+    # Extract feedback (everything that's not the verdict line)
+    feedback_lines = [
+        line for line in result.output.split("\n")
+        if "VERDICT:" not in line.upper()
+    ]
+    feedback = "\n".join(feedback_lines).strip()
+
+    # Broadcast review result
+    verdict_emoji = "✅" if review_passed else "❌"
+    await bus.publish(AgentMessage(
+        sender=reviewer_agent,
+        channel=f"sprint-{sprint_id}" if sprint_id else "general",
+        message_type="decision",
+        content=f"{verdict_emoji} Review of {original_agent}'s work: {'PASS' if review_passed else 'FAIL'}",
+        metadata={"story_id": story_id, "review_passed": review_passed}
+    ))
+
+    return {
+        "reviewer": reviewer_agent,
+        "reviewed_agent": original_agent,
+        "review_passed": review_passed,
+        "feedback": feedback,
+        "result": result.to_dict(),
+    }
+
+
+@activity.defn
+async def record_evolution_outcome(
+    agent_name: str,
+    task_summary: str,
+    output_summary: str,
+    review_passed: bool | None = None,
+    review_feedback: str = "",
+    tests_passed: bool | None = None,
+    revision_count: int = 0,
+    project_id: str = "default",
+) -> dict:
+    """
+    Record an outcome and extract a lesson AFTER real feedback has been collected.
+    This is the correct place for evolution — not inside run_agent_activity.
+    """
+    from agents.agent_config import create_agent
+    from evolution.outcome_tracker import TaskOutcome
+
+    logger.info(
+        f"Recording evolution outcome for {agent_name}: "
+        f"review_passed={review_passed}, tests_passed={tests_passed}, revisions={revision_count}"
+    )
+
+    agent = create_agent(agent_name, project_id=project_id)
+
+    outcome = TaskOutcome(
+        agent_name=agent_name,
+        task_summary=task_summary,
+        output_summary=output_summary[:500],
+        review_passed=review_passed,
+        review_feedback=review_feedback,
+        tests_passed=tests_passed,
+        revision_count=revision_count,
+    )
+
+    await agent.remember_outcome(outcome)
+
+    return {
+        "agent_name": agent_name,
+        "lesson_recorded": True,
+        "review_passed": review_passed,
+        "revision_count": revision_count,
+    }
+
 
 @activity.defn
 async def plan_sprint(sprint_id: str, project_id: str, backlog: list[dict]) -> list[dict]:

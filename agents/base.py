@@ -33,6 +33,7 @@ from agile.models import AgentPersonaDB
 from agile.sprint_manager import SprintManager
 from memory.vector_store import VectorMemory
 from evolution.outcome_tracker import OutcomeTracker, TaskOutcome
+from evolution.self_reflection import SelfReflector
 from agents.agent_config import (
     AgentConfig,
     AgentState,
@@ -157,7 +158,9 @@ class BaseAgent(ABC):
         # Semantic memory for long-term self-evolution
         self.vector_memory = VectorMemory(self.name)
         self.outcome_tracker = OutcomeTracker(self.client)
+        self.reflector = SelfReflector(self._llm)
         self.recent_lessons = []
+        self.recent_mistakes = []  # Past mistakes for self-reflection
 
     @property
     @abstractmethod
@@ -262,10 +265,17 @@ class BaseAgent(ABC):
 
         # Self-Evolution: Recall similar tasks before starting
         try:
-            similar_memories = await self.vector_memory.search(task, memory_type="lesson", top_k=3)
-            self.recent_lessons = [m.content for m in similar_memories if m.similarity > 0.7]
+            similar_memories = await self.vector_memory.search(task, memory_type="lesson", top_k=5)
+            self.recent_lessons = [m.content for m in similar_memories if m.similarity > 0.65]
+            # Separate mistakes (from failed outcomes) for self-reflection
+            self.recent_mistakes = [
+                m.content for m in similar_memories
+                if m.similarity > 0.65 and m.metadata.get("review_passed") is False
+            ]
             if self.recent_lessons:
                 logger.info("[%s] Recalled %d relevant lessons from past tasks.", self.name, len(self.recent_lessons))
+            if self.recent_mistakes:
+                logger.info("[%s] Recalled %d past mistakes to watch for.", self.name, len(self.recent_mistakes))
         except Exception as e:
             logger.warning("[%s] Failed to recall memory: %s", self.name, e)
 
@@ -345,6 +355,30 @@ class BaseAgent(ABC):
         if not result.errors:
             self._state = AgentState.DONE
             result.state = "done"
+
+        # Self-Reflection: Critique output before returning
+        if result.output and not result.errors:
+            try:
+                reflection = await self.reflector.reflect(
+                    agent_name=self.name,
+                    task=task,
+                    output=result.output,
+                    past_mistakes=self.recent_mistakes,
+                )
+                if reflection.self_fixed:
+                    logger.info(
+                        "[%s] Self-reflection caught %d issues and self-corrected.",
+                        self.name, len(reflection.issues_found)
+                    )
+                    result.output = reflection.revised_output
+                    result.metadata["self_reflection_applied"] = True
+                    result.metadata["issues_self_corrected"] = len(reflection.issues_found)
+                    result.metadata["self_reflection_confidence"] = reflection.confidence
+                else:
+                    result.metadata["self_reflection_applied"] = False
+                    result.metadata["self_reflection_confidence"] = reflection.confidence
+            except Exception as e:
+                logger.warning("[%s] Self-reflection failed: %s. Returning unreviewed output.", self.name, e)
 
         # Persist to memory
         if self.memory:

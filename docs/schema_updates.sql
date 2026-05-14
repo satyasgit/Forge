@@ -86,7 +86,22 @@ CREATE TABLE IF NOT EXISTS agent_memory_vectors (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 8. Indexes for performance
+-- 8. Agent Performance Tracking (Scorecard)
+CREATE TABLE IF NOT EXISTS agent_performance (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    agent_name VARCHAR(100) NOT NULL,
+    sprint_id UUID REFERENCES sprints(id),
+    tasks_completed INTEGER DEFAULT 0,
+    tasks_failed INTEGER DEFAULT 0,
+    first_pass_rate FLOAT DEFAULT 0.0,
+    avg_revisions FLOAT DEFAULT 0.0,
+    total_cost_usd FLOAT DEFAULT 0.0,
+    self_corrections INTEGER DEFAULT 0,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(agent_name, sprint_id)
+);
+
+-- 9. Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_stories_sprint ON user_stories(sprint_id);
 CREATE INDEX IF NOT EXISTS idx_messages_channel ON agent_messages(channel);
 CREATE INDEX IF NOT EXISTS idx_memory_vectors_agent_type ON agent_memory_vectors(agent_name, memory_type);
